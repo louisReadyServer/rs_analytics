@@ -295,7 +295,7 @@ def main() -> int:
   - Property Access: Confirmed
   
   You can now run the ETL pipeline:
-    python scripts/run_etl.py
+    python scripts/run_etl_unified.py --source ga4 --lookback-days 30
 """)
     
     return 0

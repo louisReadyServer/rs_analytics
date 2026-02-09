@@ -392,7 +392,7 @@ def render_acquisition_quality(
         
         Run the GA4 ETL to populate this data:
         ```bash
-        python scripts/run_etl_comprehensive.py --lifetime
+        python scripts/run_etl_unified.py --source ga4 --comprehensive --lifetime
         ```
         """)
         return
@@ -611,7 +611,7 @@ def render_landing_page_performance(
         
         Run the GA4 ETL to populate this data:
         ```bash
-        python scripts/run_etl_comprehensive.py --lifetime
+        python scripts/run_etl_unified.py --source ga4 --comprehensive --lifetime
         ```
         """)
         return
@@ -961,7 +961,7 @@ def render_behavior_engagement(
         
         Run the GA4 ETL to populate this data:
         ```bash
-        python scripts/run_etl_comprehensive.py --lifetime
+        python scripts/run_etl_unified.py --source ga4 --comprehensive --lifetime
         ```
         """)
         return
@@ -1350,7 +1350,7 @@ def render_geo_device_check(
         
         Run the GA4 ETL to populate this data:
         ```bash
-        python scripts/run_etl_comprehensive.py --lifetime
+        python scripts/run_etl_unified.py --source ga4 --comprehensive --lifetime
         ```
         """)
         return

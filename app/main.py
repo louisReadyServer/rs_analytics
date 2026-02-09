@@ -40,8 +40,6 @@ sys.path.insert(0, str(project_root))
 
 # Import dashboard components
 from app.components.executive_dashboard import render_executive_dashboard
-from app.components.advanced_analytics import render_advanced_analytics_tab
-
 
 # ============================================
 # Page Configuration
@@ -370,12 +368,12 @@ def render_ga4_dashboard(config, duckdb_path: str):
         
         Run the ETL pipeline to populate the database:
         ```bash
-        python scripts/run_etl.py
+        python scripts/run_etl_unified.py --source ga4 --lookback-days 30
         ```
         
         Or for comprehensive data:
         ```bash
-        python scripts/run_etl_comprehensive.py --lifetime
+        python scripts/run_etl_unified.py --source ga4 --comprehensive --lifetime
         ```
         """)
         return
@@ -2736,8 +2734,8 @@ def render_settings_page(ga4_config, gsc_config, gads_config, duckdb_path: str):
     st.markdown("""
     **GA4 Data Extraction:**
     ```bash
-    python scripts/run_etl.py                              # Last 30 days
-    python scripts/run_etl_comprehensive.py --lifetime     # All metrics, lifetime
+    python scripts/run_etl_unified.py --source ga4 --lookback-days 30   # Last 30 days
+    python scripts/run_etl_unified.py --source ga4 --comprehensive --lifetime  # All metrics, lifetime
     ```
     
     **GSC Data Extraction:**
@@ -2791,7 +2789,6 @@ def main():
             "Navigation",
             options=[
                 "📈 Executive Dashboard",
-                "🔬 Advanced Analytics",
                 "📊 GA4 Analytics", 
                 "🔍 Search Console (SEO)", 
                 "💰 Google Ads (PPC)", 
@@ -2851,9 +2848,6 @@ def main():
     # Main Content
     if page == "📈 Executive Dashboard":
         render_executive_dashboard(duckdb_path)
-    
-    elif page == "🔬 Advanced Analytics":
-        render_advanced_analytics_tab(duckdb_path)
     
     elif page == "📊 GA4 Analytics":
         if ga4_config:

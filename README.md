@@ -1,18 +1,21 @@
 # rs_analytics
 
-**Unified Analytics Pipeline** for extracting data from Google Analytics 4 (GA4), Google Search Console (GSC), Google Ads, and Meta (Facebook) Ads into a local DuckDB warehouse with a Streamlit dashboard for visualization.
+**Unified Marketing Analytics Pipeline** — GA4, GSC, Google Ads, Meta Ads → DuckDB → Streamlit Dashboard.
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| **README.md** (this file) | Setup, credentials, ETL commands |
+| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Code patterns, conventions, extending the project |
+| **[data/DATABASE_DESIGN.md](data/DATABASE_DESIGN.md)** | Complete database schema reference |
 
 ## Features
 
-- **GA4 Data Extraction**: Pull website analytics using the Google Analytics Data API
-- **Google Search Console (SEO)**: Comprehensive organic search data and keyword performance
-- **Google Ads (PPC)**: Campaign, ad group, keyword, and conversion data from Google Ads
-- **Meta (Facebook) Ads**: Campaign, ad set, ad performance with demographic and geographic breakdowns
-- **Local Data Warehouse**: Store 165,000+ rows in DuckDB for fast local queries
-- **Streamlit Dashboard**: Interactive 5-tab visualization (GA4, SEO, Google Ads, Meta Ads, Settings)
-- **MBA-Level Marketing Analytics**: Advanced metrics including ROAS, CPI, frequency analysis, and strategic insights
-- **Secure Credentials**: Service account and OAuth authentication with no secrets in code
-- **Lifetime Data**: Pull complete historical data from all sources
+- **Multi-Source ETL**: GA4, Google Search Console, Google Ads, Meta Ads, Twitter
+- **Local DuckDB Warehouse**: Fast local analytics with 35+ tables
+- **Streamlit Dashboard**: Executive summary + per-platform dashboards
+- **Production Ready**: Cron scheduling, VPS deployment scripts
 
 ## Quick Start
 
@@ -64,12 +67,6 @@ python scripts/run_etl_unified.py --source all --lookback-days 30
 python scripts/run_etl_unified.py --source ga4 --lookback-days 30
 python scripts/run_etl_unified.py --source gads --lifetime
 python scripts/run_etl_unified.py --source gsc --start-date 2024-01-01
-
-# Legacy scripts still work:
-python scripts/run_etl_comprehensive.py --lifetime
-python scripts/run_etl_gsc.py --lifetime
-python scripts/run_etl_gads.py --lifetime
-python scripts/run_etl_meta.py --lifetime
 ```
 
 ### 6. Launch the Dashboard
@@ -110,14 +107,14 @@ Open **http://localhost:3000** to view your analytics dashboard with 5 tabs:
 #### ETL Commands
 
 ```bash
-# Standard daily ETL (last 30 days)
-python scripts/run_etl.py
+# Standard GA4 ETL (last 30 days)
+python scripts/run_etl_unified.py --source ga4 --lookback-days 30
 
-# Comprehensive ETL (all metrics, lifetime)
-python scripts/run_etl_comprehensive.py --lifetime
+# Comprehensive GA4 ETL (all metrics, lifetime)
+python scripts/run_etl_unified.py --source ga4 --comprehensive --lifetime
 
 # Custom date range
-python scripts/run_etl_comprehensive.py --start-date 2024-01-01 --end-date 2024-12-31
+python scripts/run_etl_unified.py --source ga4 --start-date 2024-01-01 --end-date 2024-12-31
 ```
 
 ---
@@ -287,96 +284,16 @@ The Meta Ads dashboard includes MBA-level marketing analytics:
 
 ```
 rs_analytics/
-├── .env.example              # Template for environment variables
-├── .env                      # Your local configuration (NOT committed)
-├── .gitignore                # Git ignore rules
-├── README.md                 # This file
-├── requirements.txt          # Python dependencies
-│
-├── secrets/                  # Credential files (NOT committed)
-│   ├── ga4_service_account.json
-│   ├── gsc_service_account.json
-│   └── google_ads.yaml
-│
-├── data/                     # DuckDB database & documentation
-│   ├── warehouse.duckdb      # Local analytics warehouse
-│   └── DATABASE_DESIGN.md    # Complete schema documentation
-│
-├── logs/                     # Application logs (NOT committed)
-│   └── *.log
-│
-├── etl/                      # ETL modules and extractors
-│   ├── __init__.py
-│   ├── base.py               # BaseExtractor class (shared functionality)
-│   ├── utils.py              # Shared utilities (dates, paths, logging)
-│   ├── config.py             # GA4 configuration
-│   ├── gsc_config.py         # Search Console configuration
-│   ├── gsc_extractor.py      # Search Console data extractor
-│   ├── gads_config.py        # Google Ads configuration
-│   ├── gads_extractor.py     # Google Ads data extractor
-│   ├── meta_config.py        # Meta Ads configuration
-│   ├── meta_extractor.py     # Meta Ads data extractor
-│   ├── twitter_config.py     # Twitter/X configuration
-│   └── twitter_extractor.py  # Twitter/X data extractor
-│
-├── scripts/                  # Runnable scripts
-│   ├── __init__.py
-│   ├── utils/                # Shared script utilities
-│   │   ├── __init__.py
-│   │   ├── cli.py            # Argument parsing, logging setup
-│   │   ├── db.py             # DuckDB loading utilities
-│   │   └── test_helpers.py   # Connection test helpers
-│   │
-│   ├── run_etl_unified.py    # Unified ETL runner (all sources)
-│   ├── test_connections_unified.py  # Unified connection tester
-│   │
-│   ├── run_etl.py            # Standard GA4 ETL (legacy)
-│   ├── run_etl_comprehensive.py  # Full GA4 extraction (legacy)
-│   ├── run_etl_gsc.py        # Search Console ETL (legacy)
-│   ├── run_etl_gads.py       # Google Ads ETL (legacy)
-│   ├── run_etl_meta.py       # Meta Ads ETL (legacy)
-│   ├── run_etl_twitter.py    # Twitter/X ETL (legacy)
-│   │
-│   ├── test_*_connection.py  # Individual connection tests (legacy)
-│   ├── compare_meta_accounts.py
-│   ├── list_gads_accounts.py
-│   └── generate_gads_refresh_token.py
-│
-├── scheduler/                # Job scheduling (for cron-style ETL)
-│   ├── __init__.py
-│   ├── jobs.py               # ETL job definitions
-│   └── runner.py             # Scheduler daemon
-│
-├── analysis/                 # ML models and insights
-│   ├── __init__.py
-│   ├── models/               # ML model definitions
-│   │   ├── __init__.py
-│   │   └── base.py           # Base model classes
-│   └── insights/             # Automated insight generation
-│       ├── __init__.py
-│       └── generators.py     # Insight generators
-│
-└── app/                      # Streamlit dashboard
-    ├── __init__.py
-    └── main.py               # Multi-tab dashboard app
+├── app/                    # Streamlit dashboard (main.py + components/)
+├── etl/                    # Extractors and configs per platform
+├── scripts/                # CLI tools (run_etl_*, test_*_connection.py)
+├── data/                   # DuckDB warehouse + DATABASE_DESIGN.md
+├── docs/                   # ARCHITECTURE.md (code patterns, conventions)
+├── secrets/                # Credentials (gitignored)
+└── deploy/                 # VPS deployment scripts
 ```
 
----
-
-## Database Overview
-
-**Location:** `data/warehouse.duckdb`  
-**Total Tables:** 35  
-**Total Rows:** 165,000+
-
-| Source | Tables | Rows | Data |
-|--------|--------|------|------|
-| GA4 | 6 | 63,480+ | Traffic, pages, geography, technology, events |
-| Search Console | 10 | 94,270+ | Queries, pages, countries, devices |
-| Google Ads | 9 | 7,395+ | Campaigns, keywords, ads, conversions |
-| Meta Ads | 10 | 500+ | Campaigns, ad sets, ads, demographics, geographic |
-
-See `data/DATABASE_DESIGN.md` for complete schema documentation.
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for detailed structure and code conventions.
 
 ---
 
@@ -420,31 +337,7 @@ See `data/DATABASE_DESIGN.md` for complete schema documentation.
 
 ## Running in Production
 
-### Option 1: Built-in Scheduler (Recommended)
-
-The project includes a built-in job scheduler that handles daily ETL runs:
-
-```bash
-# Install scheduler dependency
-pip install apscheduler>=3.10.0
-
-# Start the scheduler daemon
-python -m scheduler.runner --start
-
-# Or run jobs manually
-python -m scheduler.runner --run-now gads
-python -m scheduler.runner --run-all
-python -m scheduler.runner --list-jobs
-```
-
-Default schedule (staggered to avoid API rate limits):
-- GA4: 6:00 AM
-- GSC: 6:15 AM
-- Google Ads: 6:30 AM
-- Meta: 6:45 AM
-- Twitter: 7:00 AM
-
-### Option 2: System Cron (Linux/Mac)
+### Option 1: System Cron (Linux/Mac)
 
 ```bash
 # Edit crontab
@@ -460,35 +353,9 @@ crontab -e
 45 6 * * * cd /path/to/rs_analytics && python scripts/run_etl_unified.py --source meta >> logs/cron.log 2>&1
 ```
 
-### Option 3: Windows Task Scheduler
+### Option 2: Windows Task Scheduler
 
 Create scheduled tasks for each ETL script with appropriate triggers (daily, specific times).
-
----
-
-## Analysis and Insights (Coming Soon)
-
-The `analysis/` module provides ML-powered insights:
-
-```python
-# Install optional ML dependencies
-pip install scikit-learn>=1.3.0
-
-# Generate daily insights
-from analysis.insights import generate_daily_insights
-
-insights = generate_daily_insights("data/warehouse.duckdb", lookback_days=7)
-
-for insight in insights:
-    print(f"[{insight.priority.value}] {insight.title}")
-    print(f"  {insight.description}")
-```
-
-Features in development:
-- Anomaly detection for key metrics
-- Trend forecasting
-- Channel attribution analysis
-- Automated recommendations
 
 ---
 

@@ -53,15 +53,6 @@ plotly>=5.18.0
 # apscheduler>=3.10.0
 
 # ============================================
-# ML/Analysis Dependencies
-# ============================================
-# Required for ML Analytics features
-
-scikit-learn>=1.3.0
-scipy>=1.11.0
-# prophet>=1.1.0  # Optional: for advanced forecasting
-
-# ============================================
 # Development Dependencies
 # ============================================
 
@@ -83,4 +74,3 @@ scipy>=1.11.0
 # - Google Ads and Meta use OAuth tokens
 # - BigQuery dependencies are optional - enable only if using BQ mirror
 # - Scheduler dependencies are optional - enable for automated ETL runs
-# - ML dependencies are optional - enable for insight generation
