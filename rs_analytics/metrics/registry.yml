@@ -1,0 +1,207 @@
+# ============================================
+# RS Analytics - Metrics Contract (registry.yml)
+# ============================================
+#
+# This file defines every metric the dashboard can show.
+# The MetricEngine reads this to build SQL queries consistently.
+#
+# Schema:
+#   name          Unique metric identifier (used in code)
+#   label         Human-readable label for tiles/charts
+#   description   One-line explanation (shown in tooltips)
+#   type          'base' (simple aggregation) or 'derived' (formula over base metrics)
+#   expression    SQL expression (aggregation). Use canonical column names from v_exec_daily.
+#   source_view   DuckDB view to query (default: v_exec_daily)
+#   format        Display format: currency | percent | integer | float | ratio
+#   dims_allowed  Which GROUP BY dimensions are valid for this metric
+#   caveats       Data quality notes shown to users
+#   depends_on    (derived only) List of base metrics this depends on
+#
+# Canonical dimensions (from v_exec_daily):
+#   channel, channel_type, attribution
+#
+# Additional dimensions available in platform-specific views:
+#   campaign, platform, country, device, media_source
+
+metrics:
+
+  # ── Spend & Cost ─────────────────────────────────────────────
+  - name: spend
+    label: "Ad Spend"
+    description: "Total advertising spend across paid channels"
+    type: base
+    expression: "COALESCE(SUM(spend), 0)"
+    source_view: v_exec_daily
+    format: currency
+    dims_allowed: [channel, channel_type]
+    caveats: []
+
+  - name: cpc
+    label: "CPC"
+    description: "Cost per click (Spend / Clicks)"
+    type: derived
+    expression: "CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END"
+    source_view: v_exec_daily
+    format: currency
+    dims_allowed: [channel, channel_type]
+    depends_on: [spend, clicks]
+    caveats: []
+
+  - name: cpa
+    label: "CPA"
+    description: "Cost per acquisition (Spend / Conversions)"
+    type: derived
+    expression: "CASE WHEN SUM(conversions) > 0 THEN SUM(spend) / SUM(conversions) ELSE 0 END"
+    source_view: v_exec_daily
+    format: currency
+    dims_allowed: [channel, channel_type]
+    depends_on: [spend, conversions]
+    caveats: []
+
+  # ── Volume ───────────────────────────────────────────────────
+  - name: clicks
+    label: "Clicks"
+    description: "Total clicks across all channels"
+    type: base
+    expression: "COALESCE(SUM(clicks), 0)"
+    source_view: v_exec_daily
+    format: integer
+    dims_allowed: [channel, channel_type]
+    caveats: []
+
+  - name: impressions
+    label: "Impressions"
+    description: "Total ad impressions across all channels"
+    type: base
+    expression: "COALESCE(SUM(impressions), 0)"
+    source_view: v_exec_daily
+    format: integer
+    dims_allowed: [channel, channel_type]
+    caveats: []
+
+  - name: installs
+    label: "Installs"
+    description: "App installs (from AppsFlyer + Meta)"
+    type: base
+    expression: "COALESCE(SUM(installs), 0)"
+    source_view: v_exec_daily
+    format: integer
+    dims_allowed: [channel, channel_type]
+    caveats: ["AppsFlyer same-day data"]
+
+  - name: signups
+    label: "Sign-ups"
+    description: "User registrations (from AppsFlyer + User Logs)"
+    type: base
+    expression: "COALESCE(SUM(signups), 0)"
+    source_view: v_exec_daily
+    format: integer
+    dims_allowed: [channel, channel_type]
+    caveats: ["May double-count across sources"]
+
+  # ── Conversions & Revenue ────────────────────────────────────
+  - name: conversions
+    label: "Conversions"
+    description: "Total conversions (platform-specific definition per channel)"
+    type: base
+    expression: "COALESCE(SUM(conversions), 0)"
+    source_view: v_exec_daily
+    format: integer
+    dims_allowed: [channel, channel_type]
+    caveats: ["Definition varies per channel"]
+
+  - name: revenue
+    label: "Revenue"
+    description: "Total conversion value / purchase revenue"
+    type: base
+    expression: "COALESCE(SUM(revenue), 0)"
+    source_view: v_exec_daily
+    format: currency
+    dims_allowed: [channel, channel_type]
+    caveats: ["GA4 delayed 48h", "Meta purchase_value only"]
+
+  - name: roas
+    label: "ROAS"
+    description: "Return on Ad Spend (Revenue / Spend)"
+    type: derived
+    expression: "CASE WHEN SUM(spend) > 0 THEN SUM(revenue) / SUM(spend) ELSE 0 END"
+    source_view: v_exec_daily
+    format: ratio
+    dims_allowed: [channel, channel_type]
+    depends_on: [revenue, spend]
+    caveats: ["GA4 revenue delayed 48h"]
+
+  # ── Rates ────────────────────────────────────────────────────
+  - name: ctr
+    label: "CTR"
+    description: "Click-through rate (Clicks / Impressions)"
+    type: derived
+    expression: "CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END"
+    source_view: v_exec_daily
+    format: percent
+    dims_allowed: [channel, channel_type]
+    depends_on: [clicks, impressions]
+    caveats: []
+
+  - name: install_rate
+    label: "Install Rate"
+    description: "Install conversion rate (Installs / Clicks)"
+    type: derived
+    expression: "CASE WHEN SUM(clicks) > 0 THEN SUM(installs) * 100.0 / SUM(clicks) ELSE 0 END"
+    source_view: v_exec_daily
+    format: percent
+    dims_allowed: [channel, channel_type]
+    depends_on: [installs, clicks]
+    caveats: []
+
+  # ── Web (GA4-specific, separate source view) ─────────────────
+  - name: sessions
+    label: "Sessions"
+    description: "Website sessions from GA4"
+    type: base
+    expression: "COALESCE(SUM(CAST(sessions AS BIGINT)), 0)"
+    source_view: ga4_sessions
+    format: integer
+    dims_allowed: []
+    caveats: ["GA4 delayed 24-48h"]
+
+  - name: users
+    label: "Users"
+    description: "Total website users from GA4"
+    type: base
+    expression: "COALESCE(SUM(CAST(totalUsers AS BIGINT)), 0)"
+    source_view: ga4_sessions
+    format: integer
+    dims_allowed: []
+    caveats: ["GA4 delayed 24-48h"]
+
+  - name: bounce_rate
+    label: "Bounce Rate"
+    description: "Percentage of single-page sessions (GA4)"
+    type: base
+    expression: "AVG(CAST(bounceRate AS DOUBLE))"
+    source_view: ga4_sessions
+    format: percent
+    dims_allowed: []
+    caveats: ["GA4 delayed 24-48h"]
+
+  # ── Organic Search (GSC-specific) ────────────────────────────
+  - name: organic_clicks
+    label: "Organic Clicks"
+    description: "Clicks from Google Search Console"
+    type: base
+    expression: "COALESCE(SUM(clicks), 0)"
+    source_view: gsc_daily_totals
+    format: integer
+    dims_allowed: []
+    caveats: ["GSC delayed 2-3 days"]
+
+  - name: avg_position
+    label: "Avg Position"
+    description: "Average search ranking position"
+    type: base
+    expression: "AVG(position)"
+    source_view: gsc_daily_totals
+    format: float
+    dims_allowed: []
+    caveats: ["GSC delayed 2-3 days"]

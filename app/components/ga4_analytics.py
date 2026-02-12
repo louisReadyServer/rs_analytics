@@ -27,6 +27,8 @@ import streamlit as st
 import pandas as pd
 import duckdb
 
+from app.components.glossary import TERM_TOOLTIPS
+
 
 # ============================================
 # Data Loading Helpers
@@ -281,7 +283,7 @@ def render_ga4_executive_summary(
             label="🎯 Sessions",
             value=f"{sessions:,}",
             delta=f"{sessions_delta:+.1f}%" if sessions_delta is not None else None,
-            help="Total number of sessions (visits) in the selected period"
+            help=TERM_TOOLTIPS.get("Sessions", "Total sessions in the selected period"),
         )
     
     with col2:
@@ -289,7 +291,7 @@ def render_ga4_executive_summary(
             label="👤 New Users",
             value=f"{new_users:,}",
             delta=f"{new_users_delta:+.1f}%" if new_users_delta is not None else None,
-            help="Users visiting your site for the first time"
+            help=TERM_TOOLTIPS.get("New Users", "Users visiting for the first time"),
         )
     
     with col3:
@@ -299,14 +301,14 @@ def render_ga4_executive_summary(
         st.metric(
             label="✨ Engaged Sessions",
             value=f"{engaged_sessions:,}",
-            help="Sessions where users actively engaged with content (bounce rate < 50%)"
+            help="Sessions where users actively engaged with content (bounce rate < 50%)",
         )
     
     with col4:
         st.metric(
             label="📈 Engagement Rate",
             value=f"{engagement_rate:.1%}",
-            help="Percentage of sessions where users engaged (inverse of bounce rate)"
+            help=TERM_TOOLTIPS.get("Engagement Rate", "Percentage of sessions with engagement"),
         )
     
     with col5:
@@ -315,7 +317,7 @@ def render_ga4_executive_summary(
         st.metric(
             label="🎁 Conversion Rate",
             value="-",
-            help="Primary conversion event rate (requires event tracking configuration)"
+            help=TERM_TOOLTIPS.get("Conversion Rate", "Conversions ÷ Clicks × 100"),
         )
     
     with col6:
@@ -323,7 +325,7 @@ def render_ga4_executive_summary(
         st.metric(
             label="🔄 Avg Conv/User",
             value="-",
-            help="Average conversions per user (requires event tracking configuration)"
+            help="Average conversions per user (requires event tracking)",
         )
     
     # ========================================

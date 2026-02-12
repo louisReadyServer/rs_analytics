@@ -40,6 +40,14 @@ sys.path.insert(0, str(project_root))
 
 # Import dashboard components
 from app.components.executive_dashboard import render_executive_dashboard
+from app.components.app_analytics import render_app_analytics
+from app.components.appsflyer_dashboard import render_appsflyer_dashboard
+from app.components.glossary import TERM_TOOLTIPS
+
+# Lifecycle mega-pages (Phase 3)
+from app.components.lifecycle_acquire import render_acquire_page
+from app.components.lifecycle_activate import render_activate_page
+from app.components.lifecycle_monetize import render_monetize_page
 
 # ============================================
 # Page Configuration
@@ -453,13 +461,17 @@ def render_gsc_dashboard(gsc_config, duckdb_path: str):
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric("Total Clicks", f"{int(totals_df['total_clicks'].iloc[0] or 0):,}")
+                st.metric("Total Clicks", f"{int(totals_df['total_clicks'].iloc[0] or 0):,}",
+                         help=TERM_TOOLTIPS.get("Clicks"))
             with col2:
-                st.metric("Total Impressions", f"{int(totals_df['total_impressions'].iloc[0] or 0):,}")
+                st.metric("Total Impressions", f"{int(totals_df['total_impressions'].iloc[0] or 0):,}",
+                         help=TERM_TOOLTIPS.get("Impressions"))
             with col3:
-                st.metric("Average CTR", f"{float(totals_df['avg_ctr'].iloc[0] or 0):.2%}")
+                st.metric("Average CTR", f"{float(totals_df['avg_ctr'].iloc[0] or 0):.2%}",
+                         help=TERM_TOOLTIPS.get("CTR"))
             with col4:
-                st.metric("Avg Position", f"{float(totals_df['avg_position'].iloc[0] or 0):.1f}")
+                st.metric("Avg Position", f"{float(totals_df['avg_position'].iloc[0] or 0):.1f}",
+                         help=TERM_TOOLTIPS.get("Average Position"))
     
     st.divider()
     
@@ -519,7 +531,18 @@ def render_gsc_dashboard(gsc_config, duckdb_path: str):
 # Google Ads Dashboard Page
 # ============================================
 def render_gads_dashboard(gads_config, duckdb_path: str):
-    """Render the Google Ads dashboard."""
+    """
+    Render the Google Ads (PPC) dashboard with comprehensive analytics.
+    
+    Features:
+    - Key PPC metrics with period comparison
+    - Campaign performance with efficiency scoring (A-F grades)
+    - Top keywords analysis with ROAS and CPA
+    - Device performance breakdown
+    - Ad group performance
+    - Geographic performance with world map
+    - Unified trend charts with tabs
+    """
     
     st.header("💰 Google Ads Dashboard")
     
@@ -559,101 +582,335 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
         show_comparison=False
     )
     
-    # Convert to string for SQL
-    date_cutoff = start_date.strftime('%Y-%m-%d')
+    # Convert to strings for SQL
+    start_date_str = start_date.strftime('%Y-%m-%d')
+    end_date_str = end_date.strftime('%Y-%m-%d')
+    
+    # Calculate previous period for comparison
+    date_range_days = (end_date - start_date).days + 1
+    prev_start = start_date - timedelta(days=date_range_days)
+    prev_end = start_date - timedelta(days=1)
+    prev_start_str = prev_start.strftime('%Y-%m-%d')
+    prev_end_str = prev_end.strftime('%Y-%m-%d')
     
     st.divider()
     
     # ========================================
-    # Key PPC Metrics
+    # Helper function to query with view fallback
+    # ========================================
+    def query_gads_table(base_table: str, query_template: str, date_col: str = 'date') -> pd.DataFrame:
+        """
+        Query Google Ads data with fallback from view to base table.
+        
+        Args:
+            base_table: Base table name (e.g., 'gads_daily_summary')
+            query_template: SQL query with {table} and {date_col} placeholders
+            date_col: Column name for date filtering
+        
+        Returns:
+            DataFrame with query results
+        """
+        # Try view first, then base table
+        view_name = f"{base_table}_v"
+        
+        # First try the view (assumes date_day column)
+        try:
+            view_query = query_template.format(table=view_name, date_col='date_day')
+            result = load_duckdb_data(duckdb_path, view_query)
+            if result is not None and not result.empty:
+                return result
+        except Exception:
+            pass
+        
+        # Fallback to base table (uses 'date' column)
+        try:
+            base_query = query_template.format(table=base_table, date_col=date_col)
+            return load_duckdb_data(duckdb_path, base_query)
+        except Exception:
+            return None
+    
+    # ========================================
+    # 📈 Key PPC Metrics
     # ========================================
     st.subheader("📈 Key PPC Metrics")
     
     if 'gads_daily_summary' in gads_tables:
+        # Current period query
         summary_query = f"""
         SELECT 
             SUM(impressions) as total_impressions,
             SUM(clicks) as total_clicks,
             SUM(cost) as total_cost,
-            AVG(ctr) as avg_ctr,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 1.0 / SUM(impressions) ELSE 0 END as avg_ctr,
+            SUM(conversions) as total_conversions,
+            SUM(conversions_value) as total_conversion_value,
+            CASE WHEN SUM(clicks) > 0 THEN SUM(cost) / SUM(clicks) ELSE 0 END as avg_cpc,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(cost) / SUM(impressions) * 1000 ELSE 0 END as avg_cpm,
+            CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE 0 END as avg_cpa,
+            CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
+        FROM gads_daily_summary
+        WHERE date >= '{start_date_str}' AND date <= '{end_date_str}'
+        """
+        
+        # Previous period query for delta
+        prev_query = f"""
+        SELECT 
+            SUM(impressions) as total_impressions,
+            SUM(clicks) as total_clicks,
+            SUM(cost) as total_cost,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 1.0 / SUM(impressions) ELSE 0 END as avg_ctr,
             SUM(conversions) as total_conversions,
             SUM(conversions_value) as total_conversion_value
-        FROM gads_daily_summary_v
-        WHERE date_day >= '{date_cutoff}'
+        FROM gads_daily_summary
+        WHERE date >= '{prev_start_str}' AND date <= '{prev_end_str}'
         """
         
         summary_df = load_duckdb_data(duckdb_path, summary_query)
+        prev_df = load_duckdb_data(duckdb_path, prev_query)
         
         if summary_df is not None and not summary_df.empty:
+            # Extract current values
+            impressions = int(summary_df['total_impressions'].iloc[0] or 0)
+            clicks = int(summary_df['total_clicks'].iloc[0] or 0)
+            cost = float(summary_df['total_cost'].iloc[0] or 0)
+            ctr = float(summary_df['avg_ctr'].iloc[0] or 0)
+            conversions = float(summary_df['total_conversions'].iloc[0] or 0)
+            conv_value = float(summary_df['total_conversion_value'].iloc[0] or 0)
+            avg_cpc = float(summary_df['avg_cpc'].iloc[0] or 0)
+            avg_cpm = float(summary_df['avg_cpm'].iloc[0] or 0)
+            avg_cpa = float(summary_df['avg_cpa'].iloc[0] or 0)
+            roas = float(summary_df['roas'].iloc[0] or 0)
+            
+            # Calculate deltas if previous period data exists
+            prev_impressions = int(prev_df['total_impressions'].iloc[0] or 0) if prev_df is not None and not prev_df.empty else 0
+            prev_clicks = int(prev_df['total_clicks'].iloc[0] or 0) if prev_df is not None and not prev_df.empty else 0
+            prev_cost = float(prev_df['total_cost'].iloc[0] or 0) if prev_df is not None and not prev_df.empty else 0
+            prev_ctr = float(prev_df['avg_ctr'].iloc[0] or 0) if prev_df is not None and not prev_df.empty else 0
+            prev_conversions = float(prev_df['total_conversions'].iloc[0] or 0) if prev_df is not None and not prev_df.empty else 0
+            prev_conv_value = float(prev_df['total_conversion_value'].iloc[0] or 0) if prev_df is not None and not prev_df.empty else 0
+            
+            # Calculate percentage changes
+            def calc_delta(current, previous):
+                if previous > 0:
+                    return ((current - previous) / previous) * 100
+                return None
+            
+            delta_impressions = calc_delta(impressions, prev_impressions)
+            delta_clicks = calc_delta(clicks, prev_clicks)
+            delta_cost = calc_delta(cost, prev_cost)
+            delta_ctr = calc_delta(ctr, prev_ctr)
+            delta_conversions = calc_delta(conversions, prev_conversions)
+            delta_conv_value = calc_delta(conv_value, prev_conv_value)
+            
+            # Row 1: Volume metrics
             col1, col2, col3, col4, col5, col6 = st.columns(6)
             
             with col1:
-                impressions = int(summary_df['total_impressions'].iloc[0] or 0)
-                st.metric("Impressions", f"{impressions:,}")
+                delta_str = f"{delta_impressions:+.1f}%" if delta_impressions is not None else None
+                st.metric("Impressions", f"{impressions:,}", delta=delta_str, help=TERM_TOOLTIPS.get("Impressions"))
             
             with col2:
-                clicks = int(summary_df['total_clicks'].iloc[0] or 0)
-                st.metric("Clicks", f"{clicks:,}")
+                delta_str = f"{delta_clicks:+.1f}%" if delta_clicks is not None else None
+                st.metric("Clicks", f"{clicks:,}", delta=delta_str, help=TERM_TOOLTIPS.get("Clicks"))
             
             with col3:
-                cost = float(summary_df['total_cost'].iloc[0] or 0)
-                st.metric("Cost", f"${cost:,.2f}")
+                delta_str = f"{delta_cost:+.1f}%" if delta_cost is not None else None
+                st.metric("Spend", f"${cost:,.2f}", delta=delta_str, delta_color="inverse", help=TERM_TOOLTIPS.get("Spend"))
             
             with col4:
-                ctr = float(summary_df['avg_ctr'].iloc[0] or 0)
-                st.metric("Avg CTR", f"{ctr:.2%}")
+                delta_str = f"{delta_ctr:+.1f}%" if delta_ctr is not None else None
+                st.metric("CTR", f"{ctr:.2%}", delta=delta_str, help=TERM_TOOLTIPS.get("CTR"))
             
             with col5:
-                conversions = float(summary_df['total_conversions'].iloc[0] or 0)
-                st.metric("Conversions", f"{conversions:,.1f}")
+                delta_str = f"{delta_conversions:+.1f}%" if delta_conversions is not None else None
+                st.metric("Conversions", f"{conversions:,.1f}", delta=delta_str, help=TERM_TOOLTIPS.get("Conversions"))
             
             with col6:
-                conv_value = float(summary_df['total_conversion_value'].iloc[0] or 0)
-                st.metric("Conv. Value", f"${conv_value:,.2f}")
+                delta_str = f"{delta_conv_value:+.1f}%" if delta_conv_value is not None else None
+                st.metric("Conv. Value", f"${conv_value:,.2f}", delta=delta_str, help=TERM_TOOLTIPS.get("Conv. Value"))
+            
+            # Row 2: Efficiency metrics
+            st.markdown("##### Efficiency Metrics")
+            eff_col1, eff_col2, eff_col3, eff_col4 = st.columns(4)
+            
+            with eff_col1:
+                st.metric("Avg CPC", f"${avg_cpc:.2f}", help="Average Cost Per Click")
+            
+            with eff_col2:
+                st.metric("Avg CPM", f"${avg_cpm:.2f}", help="Cost Per 1,000 Impressions")
+            
+            with eff_col3:
+                cpa_display = f"${avg_cpa:.2f}" if avg_cpa > 0 else "—"
+                st.metric("Avg CPA", cpa_display, help=TERM_TOOLTIPS.get("CPA"))
+            
+            with eff_col4:
+                roas_display = f"{roas:.2f}x" if roas > 0 else "—"
+                st.metric("ROAS", roas_display, help=TERM_TOOLTIPS.get("ROAS"))
+        else:
+            st.info("No data available for the selected date range.")
+    else:
+        st.warning("Daily summary table not found. Please run the Google Ads ETL.")
     
     st.divider()
     
     # ========================================
-    # Performance Over Time
+    # 📊 Performance Trends (Combined Line Graphs)
     # ========================================
-    st.subheader("📊 Performance Over Time")
+    st.subheader("📊 Performance Trends")
     
     if 'gads_daily_summary' in gads_tables:
-        time_query = f"""
+        # Fetch daily trend data
+        trend_query = f"""
         SELECT 
-            date_day as date,
+            date,
+            SUM(impressions) as impressions,
             SUM(clicks) as clicks,
             SUM(cost) as cost,
-            SUM(conversions) as conversions
-        FROM gads_daily_summary_v
-        WHERE date_day >= '{date_cutoff}'
-        GROUP BY date_day
-        ORDER BY date_day
+            SUM(conversions) as conversions,
+            SUM(conversions_value) as revenue,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 1.0 / SUM(impressions) ELSE 0 END as ctr,
+            CASE WHEN SUM(clicks) > 0 THEN SUM(cost) / SUM(clicks) ELSE 0 END as cpc,
+            CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE NULL END as cpa,
+            CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
+        FROM gads_daily_summary
+        WHERE date >= '{start_date_str}' AND date <= '{end_date_str}'
+        GROUP BY date
+        ORDER BY date
         """
         
-        time_df = load_duckdb_data(duckdb_path, time_query)
+        trend_df = load_duckdb_data(duckdb_path, trend_query)
         
-        if time_df is not None and not time_df.empty:
-            tab1, tab2, tab3 = st.tabs(["Clicks", "Cost", "Conversions"])
+        if trend_df is not None and not trend_df.empty:
+            import plotly.express as px
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
             
-            with tab1:
-                st.line_chart(time_df.set_index('date')['clicks'])
+            # Unified tabbed interface for all trends
+            trend_tabs = st.tabs([
+                "📈 Spend & Revenue", 
+                "👆 Clicks & Conversions", 
+                "📊 CTR & CPC",
+                "💰 ROAS & CPA",
+                "👁️ Impressions"
+            ])
             
-            with tab2:
-                st.line_chart(time_df.set_index('date')['cost'])
+            with trend_tabs[0]:
+                # Spend & Revenue dual-axis chart
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+                
+                fig.add_trace(
+                    go.Scatter(x=trend_df['date'], y=trend_df['cost'], name="Spend", 
+                              line=dict(color='#FF6B6B', width=2), fill='tozeroy', fillcolor='rgba(255, 107, 107, 0.1)'),
+                    secondary_y=False
+                )
+                fig.add_trace(
+                    go.Scatter(x=trend_df['date'], y=trend_df['revenue'], name="Revenue",
+                              line=dict(color='#4ECDC4', width=2), fill='tozeroy', fillcolor='rgba(78, 205, 196, 0.1)'),
+                    secondary_y=True
+                )
+                
+                fig.update_xaxes(title_text="Date")
+                fig.update_yaxes(title_text="Spend ($)", secondary_y=False, tickformat="$,.0f")
+                fig.update_yaxes(title_text="Revenue ($)", secondary_y=True, tickformat="$,.0f")
+                fig.update_layout(title="Daily Spend vs Revenue", hovermode="x unified", height=400)
+                
+                st.plotly_chart(fig, use_container_width=True)
             
-            with tab3:
-                st.line_chart(time_df.set_index('date')['conversions'])
+            with trend_tabs[1]:
+                # Clicks & Conversions
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+                
+                fig.add_trace(
+                    go.Bar(x=trend_df['date'], y=trend_df['clicks'], name="Clicks",
+                          marker_color='#5C7AEA', opacity=0.7),
+                    secondary_y=False
+                )
+                fig.add_trace(
+                    go.Scatter(x=trend_df['date'], y=trend_df['conversions'], name="Conversions",
+                              line=dict(color='#FF6B6B', width=3), mode='lines+markers'),
+                    secondary_y=True
+                )
+                
+                fig.update_xaxes(title_text="Date")
+                fig.update_yaxes(title_text="Clicks", secondary_y=False)
+                fig.update_yaxes(title_text="Conversions", secondary_y=True)
+                fig.update_layout(title="Daily Clicks & Conversions", hovermode="x unified", height=400)
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with trend_tabs[2]:
+                # CTR & CPC
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+                
+                # Convert CTR to percentage for display
+                trend_df['ctr_pct'] = trend_df['ctr'] * 100
+                
+                fig.add_trace(
+                    go.Scatter(x=trend_df['date'], y=trend_df['ctr_pct'], name="CTR (%)",
+                              line=dict(color='#9B59B6', width=2), mode='lines+markers'),
+                    secondary_y=False
+                )
+                fig.add_trace(
+                    go.Scatter(x=trend_df['date'], y=trend_df['cpc'], name="CPC ($)",
+                              line=dict(color='#E67E22', width=2), mode='lines+markers'),
+                    secondary_y=True
+                )
+                
+                fig.update_xaxes(title_text="Date")
+                fig.update_yaxes(title_text="CTR (%)", secondary_y=False, tickformat=".2f")
+                fig.update_yaxes(title_text="CPC ($)", secondary_y=True, tickformat="$.2f")
+                fig.update_layout(title="Daily CTR & CPC", hovermode="x unified", height=400)
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with trend_tabs[3]:
+                # ROAS & CPA
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+                
+                fig.add_trace(
+                    go.Scatter(x=trend_df['date'], y=trend_df['roas'], name="ROAS",
+                              line=dict(color='#2ECC71', width=2), fill='tozeroy', fillcolor='rgba(46, 204, 113, 0.1)'),
+                    secondary_y=False
+                )
+                
+                # CPA (filter out nulls for better visualization)
+                cpa_filtered = trend_df[trend_df['cpa'].notna()]
+                fig.add_trace(
+                    go.Scatter(x=cpa_filtered['date'], y=cpa_filtered['cpa'], name="CPA ($)",
+                              line=dict(color='#E74C3C', width=2, dash='dot'), mode='lines+markers'),
+                    secondary_y=True
+                )
+                
+                fig.update_xaxes(title_text="Date")
+                fig.update_yaxes(title_text="ROAS (x)", secondary_y=False, tickformat=".2f")
+                fig.update_yaxes(title_text="CPA ($)", secondary_y=True, tickformat="$.2f")
+                fig.update_layout(title="Daily ROAS & CPA", hovermode="x unified", height=400)
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with trend_tabs[4]:
+                # Impressions
+                fig = px.area(
+                    trend_df, x='date', y='impressions',
+                    title="Daily Impressions",
+                    color_discrete_sequence=['#3498DB']
+                )
+                fig.update_layout(hovermode="x unified", height=400)
+                fig.update_yaxes(tickformat=",")
+                
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No trend data available for the selected date range.")
     
     st.divider()
     
     # ========================================
-    # Campaign Performance with Efficiency Metrics
+    # 🎯 Campaign Performance & Efficiency
     # ========================================
     st.subheader("🎯 Campaign Performance & Efficiency")
     
     if 'gads_campaigns' in gads_tables:
-        # Enhanced query with all efficiency metrics
+        # Enhanced query with all efficiency metrics (using base table)
         campaigns_query = f"""
         SELECT 
             campaign_name,
@@ -662,7 +919,7 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
             SUM(cost) as cost,
-            AVG(ctr) as ctr,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 1.0 / SUM(impressions) ELSE 0 END as ctr,
             SUM(conversions) as conversions,
             SUM(conversions_value) as conversions_value,
             -- Calculated efficiency metrics
@@ -670,8 +927,8 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE NULL END as cpa,
             CASE WHEN SUM(clicks) > 0 THEN SUM(cost) / SUM(clicks) ELSE 0 END as cpc,
             CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
-        FROM gads_campaigns_v
-        WHERE date_day >= '{date_cutoff}' AND campaign_name IS NOT NULL
+        FROM gads_campaigns
+        WHERE date >= '{start_date_str}' AND date <= '{end_date_str}' AND campaign_name IS NOT NULL
         GROUP BY campaign_name, campaign_type, campaign_status
         ORDER BY cost DESC
         LIMIT 20
@@ -680,76 +937,143 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
         campaigns_df = load_duckdb_data(duckdb_path, campaigns_query)
         
         if campaigns_df is not None and not campaigns_df.empty:
-            # Calculate efficiency score (0-100)
-            # Factors: Conversion Rate (30%), CTR (20%), ROAS (30%), CPA relative to avg (20%)
+            import plotly.graph_objects as go
+            
+            # Calculate efficiency score (0-100) using weighted multi-factor scoring
+            # Factors: ROAS (35%), Conversion Rate (30%), CTR (20%), CPA efficiency (15%)
             avg_cpa = campaigns_df[campaigns_df['cpa'].notna() & (campaigns_df['cpa'] > 0)]['cpa'].mean() if any(campaigns_df['cpa'].notna() & (campaigns_df['cpa'] > 0)) else 1
             avg_conv_rate = campaigns_df['conv_rate'].mean() if campaigns_df['conv_rate'].mean() > 0 else 0.01
             avg_ctr = campaigns_df['ctr'].mean() if campaigns_df['ctr'].mean() > 0 else 0.01
             avg_roas = campaigns_df['roas'].mean() if campaigns_df['roas'].mean() > 0 else 1
             
-            def calc_efficiency_score(row):
-                """Calculate composite efficiency score (0-100)."""
+            def calc_campaign_efficiency_score(row):
+                """
+                Calculate composite efficiency score (0-100).
+                
+                Scoring breakdown:
+                - ROAS: 35 points (higher is better, capped at 2x average)
+                - Conversion Rate: 30 points (higher is better, capped at 2x average)  
+                - CTR: 20 points (higher is better, capped at 2x average)
+                - CPA Efficiency: 15 points (lower is better, capped at 0.5x average)
+                """
                 score = 0
                 
+                # ROAS score (35 points max) - most important for profitability
+                if avg_roas > 0 and row['roas']:
+                    roas_ratio = min(row['roas'] / avg_roas, 2.0)
+                    score += roas_ratio * 17.5  # Max 35 points
+                
                 # Conversion Rate score (30 points max)
-                # Normalized against average, capped at 2x average for max score
                 if avg_conv_rate > 0:
                     conv_ratio = min(row['conv_rate'] / avg_conv_rate, 2.0)
                     score += conv_ratio * 15  # Max 30 points
                 
                 # CTR score (20 points max)
-                if avg_ctr > 0:
-                    ctr_ratio = min(row['ctr'] / avg_ctr, 2.0) if row['ctr'] else 0
+                if avg_ctr > 0 and row['ctr']:
+                    ctr_ratio = min(row['ctr'] / avg_ctr, 2.0)
                     score += ctr_ratio * 10  # Max 20 points
                 
-                # ROAS score (30 points max)
-                if avg_roas > 0:
-                    roas_ratio = min(row['roas'] / avg_roas, 2.0) if row['roas'] else 0
-                    score += roas_ratio * 15  # Max 30 points
-                
-                # CPA score (20 points max) - lower is better
+                # CPA Efficiency score (15 points max) - lower is better
                 if row['cpa'] and row['cpa'] > 0 and avg_cpa > 0:
                     cpa_ratio = min(avg_cpa / row['cpa'], 2.0)  # Inverted - lower CPA is better
-                    score += cpa_ratio * 10  # Max 20 points
+                    score += cpa_ratio * 7.5  # Max 15 points
                 
                 return min(round(score), 100)
             
-            campaigns_df['efficiency_score'] = campaigns_df.apply(calc_efficiency_score, axis=1)
+            campaigns_df['efficiency_score'] = campaigns_df.apply(calc_campaign_efficiency_score, axis=1)
             
-            # Grade based on score
-            def get_grade(score):
+            # Grade based on score with descriptive labels
+            def get_campaign_grade(score):
                 if score >= 80: return "A"
-                elif score >= 60: return "B"
-                elif score >= 40: return "C"
-                elif score >= 20: return "D"
+                elif score >= 65: return "B"
+                elif score >= 50: return "C"
+                elif score >= 35: return "D"
                 else: return "F"
             
-            campaigns_df['grade'] = campaigns_df['efficiency_score'].apply(get_grade)
+            campaigns_df['grade'] = campaigns_df['efficiency_score'].apply(get_campaign_grade)
             
             # Display KPI summary cards
-            kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
+            st.markdown("##### Campaign Portfolio Overview")
+            kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5, kpi_col6 = st.columns(6)
             
             total_cost = campaigns_df['cost'].sum()
+            total_clicks = campaigns_df['clicks'].sum()
             total_conversions = campaigns_df['conversions'].sum()
             total_revenue = campaigns_df['conversions_value'].sum()
             overall_cpa = total_cost / total_conversions if total_conversions > 0 else 0
             overall_roas = total_revenue / total_cost if total_cost > 0 else 0
             
             with kpi_col1:
-                st.metric("Total Spend", f"${total_cost:,.2f}")
+                st.metric("Total Spend", f"${total_cost:,.2f}", help=TERM_TOOLTIPS.get("Spend"))
             with kpi_col2:
-                st.metric("Conversions", f"{total_conversions:,.1f}")
+                st.metric("Conversions", f"{total_conversions:,.1f}", help=TERM_TOOLTIPS.get("Conversions"))
             with kpi_col3:
-                st.metric("Avg CPA", f"${overall_cpa:,.2f}" if overall_cpa else "N/A")
+                st.metric("Revenue", f"${total_revenue:,.2f}", help="Total conversion value")
             with kpi_col4:
-                st.metric("Overall ROAS", f"{overall_roas:.2f}x" if overall_roas else "N/A")
+                st.metric("Avg CPA", f"${overall_cpa:,.2f}" if overall_cpa else "—", help=TERM_TOOLTIPS.get("CPA"))
             with kpi_col5:
+                st.metric("Portfolio ROAS", f"{overall_roas:.2f}x" if overall_roas else "—", help=TERM_TOOLTIPS.get("ROAS"))
+            with kpi_col6:
                 avg_efficiency = campaigns_df['efficiency_score'].mean()
-                st.metric("Avg Efficiency", f"{avg_efficiency:.0f}/100")
+                st.metric("Avg Score", f"{avg_efficiency:.0f}/100", help="Portfolio efficiency score")
             
             st.markdown("---")
             
-            # Format for display
+            # Grade distribution visualization
+            grade_col1, grade_col2 = st.columns([1, 2])
+            
+            with grade_col1:
+                st.markdown("##### Grade Distribution")
+                grade_counts = campaigns_df['grade'].value_counts().reindex(['A', 'B', 'C', 'D', 'F'], fill_value=0)
+                grade_colors = ['#27ae60', '#2ecc71', '#f39c12', '#e67e22', '#e74c3c']
+                
+                fig_grade = go.Figure(data=[
+                    go.Bar(
+                        x=grade_counts.index,
+                        y=grade_counts.values,
+                        marker_color=grade_colors,
+                        text=grade_counts.values,
+                        textposition='auto'
+                    )
+                ])
+                fig_grade.update_layout(
+                    xaxis_title="Grade",
+                    yaxis_title="# Campaigns",
+                    height=250,
+                    margin=dict(l=20, r=20, t=20, b=40),
+                    showlegend=False
+                )
+                st.plotly_chart(fig_grade, use_container_width=True)
+            
+            with grade_col2:
+                st.markdown("##### Spend vs Conversions by Efficiency")
+                # Bubble chart: spend vs conversions, sized by efficiency
+                fig_bubble = px.scatter(
+                    campaigns_df,
+                    x='cost',
+                    y='conversions',
+                    size='efficiency_score',
+                    color='grade',
+                    color_discrete_map={'A': '#27ae60', 'B': '#2ecc71', 'C': '#f39c12', 'D': '#e67e22', 'F': '#e74c3c'},
+                    hover_name='campaign_name',
+                    hover_data={
+                        'cost': ':$,.2f',
+                        'conversions': ':,.1f',
+                        'roas': ':.2f',
+                        'efficiency_score': True,
+                        'grade': True
+                    },
+                    labels={'cost': 'Spend ($)', 'conversions': 'Conversions', 'efficiency_score': 'Score'},
+                    size_max=40
+                )
+                fig_bubble.update_layout(
+                    height=250,
+                    margin=dict(l=20, r=20, t=20, b=40),
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1, title='Grade')
+                )
+                st.plotly_chart(fig_bubble, use_container_width=True)
+            
+            # Format for display table
             display_df = campaigns_df.copy()
             
             # Format campaign_type to be more readable
@@ -772,6 +1096,9 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
                 lambda x: campaign_type_map.get(x, x.replace('_', ' ').title() if x else 'Unknown') if x else 'Unknown'
             )
             
+            # Truncate long campaign names
+            display_df['campaign_name'] = display_df['campaign_name'].apply(lambda x: x[:40] + '...' if len(str(x)) > 40 else x)
+            
             display_df = display_df.rename(columns={
                 'campaign_name': 'Campaign',
                 'campaign_type': 'Type',
@@ -790,25 +1117,28 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             })
             
             # Format columns for display
+            display_df['Impr.'] = display_df['Impr.'].apply(lambda x: f"{int(x):,}" if x else "0")
+            display_df['Clicks'] = display_df['Clicks'].apply(lambda x: f"{int(x):,}" if x else "0")
             display_df['Cost'] = display_df['Cost'].apply(lambda x: f"${x:,.2f}" if x else "$0.00")
             display_df['CTR'] = display_df['CTR'].apply(lambda x: f"{x:.2%}" if x else "0%")
             display_df['Conv.'] = display_df['Conv.'].apply(lambda x: f"{x:.1f}" if x else "0")
             display_df['Conv Rate'] = display_df['Conv Rate'].apply(lambda x: f"{x:.2%}" if x else "0%")
             display_df['CPA'] = display_df['CPA'].apply(lambda x: f"${x:,.2f}" if x and x > 0 else "—")
             display_df['CPC'] = display_df['CPC'].apply(lambda x: f"${x:.2f}" if x else "$0.00")
-            display_df['ROAS'] = display_df['ROAS'].apply(lambda x: f"{x:.2f}x" if x else "0x")
+            display_df['ROAS'] = display_df['ROAS'].apply(lambda x: f"{x:.2f}x" if x else "—")
             
             # Drop intermediate columns
             display_df = display_df.drop(columns=['conversions_value'], errors='ignore')
             
             # Reorder columns for better readability
-            column_order = ['Campaign', 'Type', 'Status', 'Cost', 'Clicks', 'Conv.', 'Conv Rate', 'CPA', 'ROAS', 'CTR', 'CPC', 'Score', 'Grade']
+            column_order = ['Campaign', 'Type', 'Status', 'Cost', 'Clicks', 'Conv.', 'Conv Rate', 'CPA', 'ROAS', 'CTR', 'Score', 'Grade']
             display_df = display_df[[c for c in column_order if c in display_df.columns]]
             
+            st.markdown("##### Campaign Performance Table")
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
             # Efficiency insights
-            st.markdown("#### 💡 Campaign Insights")
+            st.markdown("##### 💡 Campaign Insights")
             
             insights_col1, insights_col2 = st.columns(2)
             
@@ -819,13 +1149,14 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
                 for _, row in top_campaigns.iterrows():
                     roas_str = f"ROAS {row['roas']:.2f}x" if row['roas'] else ""
                     conv_str = f"Conv Rate {row['conv_rate']:.1%}" if row['conv_rate'] else ""
-                    st.success(f"**{row['campaign_name'][:30]}...** - Score: {row['efficiency_score']} ({row['grade']}) | {conv_str} | {roas_str}")
+                    name_display = str(row['campaign_name'])[:35] + '...' if len(str(row['campaign_name'])) > 35 else row['campaign_name']
+                    st.success(f"**{name_display}** - Score: {row['efficiency_score']} ({row['grade']}) | {conv_str} | {roas_str}")
             
             with insights_col2:
                 # Needs attention (campaigns with spend but low efficiency)
                 needs_attention = campaigns_df[
                     (campaigns_df['cost'] > campaigns_df['cost'].quantile(0.25)) & 
-                    (campaigns_df['efficiency_score'] < 40)
+                    (campaigns_df['efficiency_score'] < 50)
                 ].nsmallest(3, 'efficiency_score')
                 
                 if not needs_attention.empty:
@@ -836,28 +1167,26 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
                             issue.append("low conv rate")
                         if row['cpa'] and row['cpa'] > avg_cpa * 1.5:
                             issue.append("high CPA")
-                        if row['roas'] < avg_roas * 0.5:
+                        if row['roas'] and row['roas'] < avg_roas * 0.5:
                             issue.append("low ROAS")
                         issues_str = ", ".join(issue) if issue else "underperforming"
-                        st.warning(f"**{row['campaign_name'][:30]}...** - Score: {row['efficiency_score']} | Issues: {issues_str}")
+                        name_display = str(row['campaign_name'])[:35] + '...' if len(str(row['campaign_name'])) > 35 else row['campaign_name']
+                        st.warning(f"**{name_display}** - Score: {row['efficiency_score']} | Issues: {issues_str}")
                 else:
-                    st.info("All campaigns are performing adequately!")
-            
-            # Campaign performance chart
-            st.markdown("#### 📊 Campaign Performance Comparison")
-            chart_df = campaigns_df[['campaign_name', 'clicks', 'conversions', 'efficiency_score']].copy()
-            chart_df['campaign_name'] = chart_df['campaign_name'].str[:25] + '...'
-            chart_df = chart_df.set_index('campaign_name')
-            st.bar_chart(chart_df[['clicks', 'conversions']])
+                    st.info("All campaigns with significant spend are performing adequately!")
+        else:
+            st.info("No campaign data available for the selected date range.")
+    else:
+        st.warning("Campaigns table not found. Please run the Google Ads ETL.")
     
     st.divider()
     
     # ========================================
-    # Keyword Performance
+    # 🔑 Top Keywords & 📱 Device Performance (Side by Side)
     # ========================================
-    col1, col2 = st.columns(2)
+    kw_dev_col1, kw_dev_col2 = st.columns(2)
     
-    with col1:
+    with kw_dev_col1:
         st.subheader("🔑 Top Keywords")
         
         if 'gads_keywords' in gads_tables:
@@ -870,11 +1199,12 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
                 SUM(cost) as cost,
                 SUM(conversions) as conversions,
                 SUM(conversions_value) as conversions_value,
+                CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 1.0 / SUM(impressions) ELSE 0 END as ctr,
                 CASE WHEN SUM(clicks) > 0 THEN SUM(conversions) / SUM(clicks) ELSE 0 END as conv_rate,
                 CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE NULL END as cpa,
                 CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
-            FROM gads_keywords_v
-            WHERE date_day >= '{date_cutoff}' AND keyword_text IS NOT NULL
+            FROM gads_keywords
+            WHERE date >= '{start_date_str}' AND date <= '{end_date_str}' AND keyword_text IS NOT NULL
             GROUP BY keyword_text, keyword_match_type
             ORDER BY cost DESC
             LIMIT 15
@@ -883,22 +1213,51 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             keywords_df = load_duckdb_data(duckdb_path, keywords_query)
             
             if keywords_df is not None and not keywords_df.empty:
+                # Summary metrics
+                kw_total_spend = keywords_df['cost'].sum()
+                kw_total_conv = keywords_df['conversions'].sum()
+                kw_avg_cpa = kw_total_spend / kw_total_conv if kw_total_conv > 0 else 0
+                
+                kw_m1, kw_m2, kw_m3 = st.columns(3)
+                with kw_m1:
+                    st.metric("Keyword Spend", f"${kw_total_spend:,.2f}")
+                with kw_m2:
+                    st.metric("Conversions", f"{kw_total_conv:,.1f}")
+                with kw_m3:
+                    st.metric("Avg CPA", f"${kw_avg_cpa:.2f}" if kw_avg_cpa > 0 else "—")
+                
+                # Format display
                 display_df = keywords_df.copy()
+                display_df['keyword_text'] = display_df['keyword_text'].apply(lambda x: x[:30] + '...' if len(str(x)) > 30 else x)
                 display_df['cost'] = display_df['cost'].apply(lambda x: f"${x:,.2f}" if x else "$0.00")
+                display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2%}" if x else "0%")
                 display_df['conv_rate'] = display_df['conv_rate'].apply(lambda x: f"{x:.1%}" if x else "0%")
                 display_df['cpa'] = display_df['cpa'].apply(lambda x: f"${x:.2f}" if x and x > 0 else "—")
                 display_df['roas'] = display_df['roas'].apply(lambda x: f"{x:.2f}x" if x else "—")
-                display_df = display_df.drop(columns=['conversions_value'], errors='ignore')
+                display_df = display_df.drop(columns=['conversions_value', 'impressions'], errors='ignore')
                 display_df = display_df.rename(columns={
                     'keyword_text': 'Keyword',
                     'keyword_match_type': 'Match',
+                    'clicks': 'Clicks',
+                    'cost': 'Cost',
+                    'conversions': 'Conv.',
+                    'ctr': 'CTR',
                     'conv_rate': 'Conv%',
                     'cpa': 'CPA',
                     'roas': 'ROAS'
                 })
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                
+                # Reorder columns
+                col_order = ['Keyword', 'Match', 'Cost', 'Clicks', 'Conv.', 'Conv%', 'CPA', 'ROAS']
+                display_df = display_df[[c for c in col_order if c in display_df.columns]]
+                
+                st.dataframe(display_df, use_container_width=True, hide_index=True, height=400)
+            else:
+                st.info("No keyword data available for the selected date range.")
+        else:
+            st.warning("Keywords table not found. Please run the Google Ads ETL.")
     
-    with col2:
+    with kw_dev_col2:
         st.subheader("📱 Device Performance")
         
         if 'gads_devices' in gads_tables:
@@ -908,14 +1267,14 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
                 SUM(impressions) as impressions,
                 SUM(clicks) as clicks,
                 SUM(cost) as cost,
-                AVG(ctr) as ctr,
+                CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 1.0 / SUM(impressions) ELSE 0 END as ctr,
                 SUM(conversions) as conversions,
                 SUM(conversions_value) as conversions_value,
                 CASE WHEN SUM(clicks) > 0 THEN SUM(conversions) / SUM(clicks) ELSE 0 END as conv_rate,
                 CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE NULL END as cpa,
                 CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
-            FROM gads_devices_v
-            WHERE date_day >= '{date_cutoff}' AND device IS NOT NULL
+            FROM gads_devices
+            WHERE date >= '{start_date_str}' AND date <= '{end_date_str}' AND device IS NOT NULL
             GROUP BY device
             ORDER BY cost DESC
             """
@@ -923,29 +1282,68 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             devices_df = load_duckdb_data(duckdb_path, devices_query)
             
             if devices_df is not None and not devices_df.empty:
-                # Device chart
-                st.bar_chart(devices_df.set_index('device')[['clicks', 'conversions']])
+                # Summary metrics
+                dev_total_spend = devices_df['cost'].sum()
+                dev_total_conv = devices_df['conversions'].sum()
+                top_device = devices_df.iloc[0]['device'] if not devices_df.empty else "—"
+                
+                dev_m1, dev_m2, dev_m3 = st.columns(3)
+                with dev_m1:
+                    st.metric("Device Spend", f"${dev_total_spend:,.2f}")
+                with dev_m2:
+                    st.metric("Conversions", f"{dev_total_conv:,.1f}")
+                with dev_m3:
+                    st.metric("Top Device", top_device)
+                
+                # Pie chart for device spend distribution
+                fig_device = px.pie(
+                    devices_df,
+                    values='cost',
+                    names='device',
+                    title='Spend by Device',
+                    hole=0.4,
+                    color_discrete_sequence=px.colors.qualitative.Set2
+                )
+                fig_device.update_layout(
+                    height=200,
+                    margin=dict(l=10, r=10, t=40, b=10),
+                    showlegend=True,
+                    legend=dict(orientation='h', yanchor='bottom', y=-0.2, xanchor='center', x=0.5)
+                )
+                st.plotly_chart(fig_device, use_container_width=True)
                 
                 # Detailed table with efficiency metrics
                 display_df = devices_df.copy()
+                display_df['impressions'] = display_df['impressions'].apply(lambda x: f"{int(x):,}" if x else "0")
+                display_df['clicks'] = display_df['clicks'].apply(lambda x: f"{int(x):,}" if x else "0")
                 display_df['cost'] = display_df['cost'].apply(lambda x: f"${x:,.2f}" if x else "$0.00")
                 display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2%}" if x else "0%")
+                display_df['conversions'] = display_df['conversions'].apply(lambda x: f"{x:.1f}" if x else "0")
                 display_df['conv_rate'] = display_df['conv_rate'].apply(lambda x: f"{x:.1%}" if x else "0%")
                 display_df['cpa'] = display_df['cpa'].apply(lambda x: f"${x:.2f}" if x and x > 0 else "—")
                 display_df['roas'] = display_df['roas'].apply(lambda x: f"{x:.2f}x" if x else "—")
                 display_df = display_df.drop(columns=['conversions_value'], errors='ignore')
                 display_df = display_df.rename(columns={
                     'device': 'Device',
+                    'impressions': 'Impr.',
+                    'clicks': 'Clicks',
+                    'cost': 'Cost',
+                    'ctr': 'CTR',
+                    'conversions': 'Conv.',
                     'conv_rate': 'Conv%',
                     'cpa': 'CPA',
                     'roas': 'ROAS'
                 })
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No device data available for the selected date range.")
+        else:
+            st.warning("Devices table not found. Please run the Google Ads ETL.")
     
     st.divider()
     
     # ========================================
-    # Ad Group Performance with Efficiency
+    # 📂 Ad Group Performance
     # ========================================
     st.subheader("📂 Ad Group Performance")
     
@@ -958,13 +1356,14 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
             SUM(cost) as cost,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 1.0 / SUM(impressions) ELSE 0 END as ctr,
             SUM(conversions) as conversions,
             SUM(conversions_value) as conversions_value,
             CASE WHEN SUM(clicks) > 0 THEN SUM(conversions) / SUM(clicks) ELSE 0 END as conv_rate,
             CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE NULL END as cpa,
             CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
-        FROM gads_ad_groups_v
-        WHERE date_day >= '{date_cutoff}' AND ad_group_name IS NOT NULL
+        FROM gads_ad_groups
+        WHERE date >= '{start_date_str}' AND date <= '{end_date_str}' AND ad_group_name IS NOT NULL
         GROUP BY campaign_name, ad_group_name, ad_group_status
         ORDER BY cost DESC
         LIMIT 20
@@ -973,8 +1372,31 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
         ad_groups_df = load_duckdb_data(duckdb_path, ad_groups_query)
         
         if ad_groups_df is not None and not ad_groups_df.empty:
+            # Summary metrics
+            ag_total_spend = ad_groups_df['cost'].sum()
+            ag_total_conv = ad_groups_df['conversions'].sum()
+            ag_count = len(ad_groups_df)
+            ag_avg_cpa = ag_total_spend / ag_total_conv if ag_total_conv > 0 else 0
+            
+            ag_m1, ag_m2, ag_m3, ag_m4 = st.columns(4)
+            with ag_m1:
+                st.metric("Ad Groups", f"{ag_count}")
+            with ag_m2:
+                st.metric("Total Spend", f"${ag_total_spend:,.2f}")
+            with ag_m3:
+                st.metric("Conversions", f"{ag_total_conv:,.1f}")
+            with ag_m4:
+                st.metric("Avg CPA", f"${ag_avg_cpa:.2f}" if ag_avg_cpa > 0 else "—")
+            
+            # Format display
             display_df = ad_groups_df.copy()
+            display_df['campaign_name'] = display_df['campaign_name'].apply(lambda x: str(x)[:25] + '...' if len(str(x)) > 25 else x)
+            display_df['ad_group_name'] = display_df['ad_group_name'].apply(lambda x: str(x)[:25] + '...' if len(str(x)) > 25 else x)
+            display_df['impressions'] = display_df['impressions'].apply(lambda x: f"{int(x):,}" if x else "0")
+            display_df['clicks'] = display_df['clicks'].apply(lambda x: f"{int(x):,}" if x else "0")
             display_df['cost'] = display_df['cost'].apply(lambda x: f"${x:,.2f}" if x else "$0.00")
+            display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2%}" if x else "0%")
+            display_df['conversions'] = display_df['conversions'].apply(lambda x: f"{x:.1f}" if x else "0")
             display_df['conv_rate'] = display_df['conv_rate'].apply(lambda x: f"{x:.1%}" if x else "0%")
             display_df['cpa'] = display_df['cpa'].apply(lambda x: f"${x:.2f}" if x and x > 0 else "—")
             display_df['roas'] = display_df['roas'].apply(lambda x: f"{x:.2f}x" if x else "—")
@@ -983,11 +1405,25 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
                 'campaign_name': 'Campaign',
                 'ad_group_name': 'Ad Group',
                 'ad_group_status': 'Status',
+                'impressions': 'Impr.',
+                'clicks': 'Clicks',
+                'cost': 'Cost',
+                'ctr': 'CTR',
+                'conversions': 'Conv.',
                 'conv_rate': 'Conv%',
                 'cpa': 'CPA',
                 'roas': 'ROAS'
             })
+            
+            # Reorder columns
+            col_order = ['Campaign', 'Ad Group', 'Status', 'Cost', 'Clicks', 'Conv.', 'Conv%', 'CPA', 'ROAS', 'CTR']
+            display_df = display_df[[c for c in col_order if c in display_df.columns]]
+            
             st.dataframe(display_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No ad group data available for the selected date range.")
+    else:
+        st.warning("Ad Groups table not found. Please run the Google Ads ETL.")
     
     st.divider()
     
@@ -1059,8 +1495,8 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             SUM(clicks) as clicks,
             SUM(cost) as cost,
             SUM(conversions) as conversions
-        FROM gads_geographic_v
-        WHERE date_day >= '{date_cutoff}' AND country_criterion_id IS NOT NULL
+        FROM gads_geographic
+        WHERE date >= '{start_date_str}' AND date <= '{end_date_str}' AND country_criterion_id IS NOT NULL
         GROUP BY country_criterion_id
         ORDER BY clicks DESC
         LIMIT 15
@@ -1173,28 +1609,72 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
         st.info("No geographic data available. Run Google Ads ETL to populate.")
     
     # ========================================
-    # Hourly Performance
+    # 🕐 Hourly Performance
     # ========================================
     st.subheader("🕐 Hourly Performance")
     
     if 'gads_hourly' in gads_tables:
         hourly_query = f"""
         SELECT 
-            hour_of_day as hour,
+            hour as hour,
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
             SUM(cost) as cost,
-            SUM(conversions) as conversions
-        FROM gads_hourly_v
-        WHERE date_day >= '{date_cutoff}' AND hour_of_day IS NOT NULL
-        GROUP BY hour_of_day
-        ORDER BY hour_of_day
+            SUM(conversions) as conversions,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 1.0 / SUM(impressions) ELSE 0 END as ctr
+        FROM gads_hourly
+        WHERE date >= '{start_date_str}' AND date <= '{end_date_str}' AND hour IS NOT NULL
+        GROUP BY hour
+        ORDER BY hour
         """
         
         hourly_df = load_duckdb_data(duckdb_path, hourly_query)
         
         if hourly_df is not None and not hourly_df.empty:
-            st.line_chart(hourly_df.set_index('hour')[['clicks', 'conversions']])
+            # Summary metrics
+            peak_hour = hourly_df.loc[hourly_df['clicks'].idxmax(), 'hour'] if not hourly_df.empty else 0
+            peak_clicks = hourly_df['clicks'].max()
+            best_ctr_hour = hourly_df.loc[hourly_df['ctr'].idxmax(), 'hour'] if not hourly_df.empty else 0
+            
+            hr_m1, hr_m2, hr_m3 = st.columns(3)
+            with hr_m1:
+                st.metric("Peak Hour (Clicks)", f"{int(peak_hour)}:00", help=f"Hour with most clicks ({int(peak_clicks):,})")
+            with hr_m2:
+                st.metric("Best CTR Hour", f"{int(best_ctr_hour)}:00", help="Hour with highest click-through rate")
+            with hr_m3:
+                total_hourly_clicks = hourly_df['clicks'].sum()
+                st.metric("Total Clicks", f"{int(total_hourly_clicks):,}")
+            
+            # Enhanced hourly chart with Plotly
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+            
+            fig_hourly = make_subplots(specs=[[{"secondary_y": True}]])
+            
+            fig_hourly.add_trace(
+                go.Bar(x=hourly_df['hour'], y=hourly_df['clicks'], name="Clicks",
+                      marker_color='#5C7AEA', opacity=0.7),
+                secondary_y=False
+            )
+            fig_hourly.add_trace(
+                go.Scatter(x=hourly_df['hour'], y=hourly_df['conversions'], name="Conversions",
+                          line=dict(color='#FF6B6B', width=3), mode='lines+markers'),
+                secondary_y=True
+            )
+            
+            fig_hourly.update_xaxes(title_text="Hour of Day", tickmode='linear', dtick=2)
+            fig_hourly.update_yaxes(title_text="Clicks", secondary_y=False)
+            fig_hourly.update_yaxes(title_text="Conversions", secondary_y=True)
+            fig_hourly.update_layout(
+                title="Performance by Hour of Day",
+                hovermode="x unified",
+                height=350,
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            )
+            
+            st.plotly_chart(fig_hourly, use_container_width=True)
+        else:
+            st.info("No hourly data available for the selected date range.")
     
     # ========================================
     # Raw Data Explorer
@@ -1348,7 +1828,8 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
                 "💰 Total Spend",
                 f"${spend:,.2f}",
                 delta=f"{delta:+.1f}%" if delta else None,
-                delta_color="inverse"
+                delta_color="inverse",
+                help=TERM_TOOLTIPS.get("Spend"),
             )
         
         with col2:
@@ -1357,12 +1838,13 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             st.metric(
                 "👁️ Impressions",
                 f"{impressions:,}",
-                delta=f"{delta:+.1f}%" if delta else None
+                delta=f"{delta:+.1f}%" if delta else None,
+                help=TERM_TOOLTIPS.get("Impressions"),
             )
         
         with col3:
             reach = int(row['reach'] or 0)
-            st.metric("👥 Unique Reach", f"{reach:,}")
+            st.metric("👥 Unique Reach", f"{reach:,}", help=TERM_TOOLTIPS.get("Reach"))
         
         with col4:
             clicks = int(row['clicks'] or 0)
@@ -1370,27 +1852,28 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             st.metric(
                 "🖱️ Clicks",
                 f"{clicks:,}",
-                delta=f"{delta:+.1f}%" if delta else None
+                delta=f"{delta:+.1f}%" if delta else None,
+                help=TERM_TOOLTIPS.get("Clicks"),
             )
         
         with col5:
             ctr = row['ctr'] or 0
-            st.metric("📈 CTR", f"{ctr:.2f}%")
+            st.metric("📈 CTR", f"{ctr:.2f}%", help=TERM_TOOLTIPS.get("CTR"))
         
         with col6:
             cpc = row['cpc'] or 0
-            st.metric("💵 CPC", f"${cpc:.2f}")
+            st.metric("💵 CPC", f"${cpc:.2f}", help=TERM_TOOLTIPS.get("CPC"))
         
         # Row 2: Performance & Conversion metrics
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         
         with col1:
             cpm = row['cpm'] or 0
-            st.metric("📊 CPM", f"${cpm:.2f}")
+            st.metric("📊 CPM", f"${cpm:.2f}", help=TERM_TOOLTIPS.get("CPM"))
         
         with col2:
             frequency = row['frequency'] or 0
-            st.metric("🔄 Frequency", f"{frequency:.2f}")
+            st.metric("🔄 Frequency", f"{frequency:.2f}", help=TERM_TOOLTIPS.get("Frequency"))
         
         with col3:
             installs = int(row['app_installs'] or 0)
@@ -1398,21 +1881,22 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             st.metric(
                 "📱 App Installs",
                 f"{installs:,}",
-                delta=f"{delta:+.1f}%" if delta else None
+                delta=f"{delta:+.1f}%" if delta else None,
+                help=TERM_TOOLTIPS.get("Installs"),
             )
         
         with col4:
             cpi = row['cpi'] or 0
-            st.metric("💳 Cost/Install", f"${cpi:.2f}")
+            st.metric("💳 Cost/Install", f"${cpi:.2f}", help=TERM_TOOLTIPS.get("CPI"))
         
         with col5:
             purchases = int(row['purchases'] or 0)
-            st.metric("🛒 Purchases", f"{purchases:,}")
+            st.metric("🛒 Purchases", f"{purchases:,}", help="Completed purchases")
         
         with col6:
             revenue = row['revenue'] or 0
             roas = (revenue / spend * 100) if spend > 0 else 0
-            st.metric("📈 ROAS", f"{roas:.1f}%")
+            st.metric("📈 ROAS", f"{roas:.1f}%", help=TERM_TOOLTIPS.get("ROAS"))
     
     st.divider()
     
@@ -2290,6 +2774,18 @@ def render_twitter_dashboard(twitter_config, duckdb_path: str):
 
 
 # ============================================
+# Advanced Analytics Pages
+# (Implemented in app/components/ modules)
+# ============================================
+
+# Import the render functions from their dedicated component files.
+# Each module handles its own data loading, ML model training, and visualization.
+from app.components.behavioral_analysis import render_behavioral_analysis  # noqa: E402
+from app.components.forecasting import render_forecasting                  # noqa: E402
+from app.components.clustering import render_clustering                    # noqa: E402
+
+
+# ============================================
 # ETL Control Panel
 # ============================================
 def render_etl_control_panel(duckdb_path: str):
@@ -2589,168 +3085,6 @@ def render_etl_control_panel(duckdb_path: str):
         """)
 
 
-# ============================================
-# Settings Page
-# ============================================
-def render_settings_page(ga4_config, gsc_config, gads_config, duckdb_path: str):
-    """Render the settings and status page."""
-    
-    st.header("⚙️ Settings & Status")
-    
-    # Configuration Status
-    st.subheader("Configuration Status")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("**GA4 Configuration**")
-        if ga4_config:
-            st.success("✅ GA4 Configured")
-            st.text(f"Property ID: {ga4_config.ga4_property_id}")
-        else:
-            st.error("❌ GA4 Not Configured")
-    
-    with col2:
-        st.markdown("**GSC Configuration**")
-        if gsc_config:
-            st.success("✅ GSC Configured")
-            st.text(f"Site URL: {gsc_config.site_url}")
-        else:
-            st.warning("⚠️ GSC Not Configured")
-    
-    with col3:
-        st.markdown("**Google Ads Configuration**")
-        if gads_config:
-            st.success("✅ Google Ads Configured")
-            st.text(f"Customer ID: {gads_config.customer_id}")
-        else:
-            st.warning("⚠️ Google Ads Not Configured")
-    
-    st.divider()
-    
-    # Database Status
-    st.subheader("Database Status")
-    
-    if Path(duckdb_path).exists():
-        st.success(f"✅ Database exists: {duckdb_path}")
-        
-        table_info = get_table_info(duckdb_path)
-        
-        if table_info:
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown("**GA4 Tables**")
-                ga4_tables = {k: v for k, v in table_info.items() if k.startswith('ga4_')}
-                for table, count in ga4_tables.items():
-                    st.text(f"  {table}: {count:,} rows")
-            
-            with col2:
-                st.markdown("**GSC Tables**")
-                gsc_tables = {k: v for k, v in table_info.items() if k.startswith('gsc_')}
-                for table, count in gsc_tables.items():
-                    st.text(f"  {table}: {count:,} rows")
-            
-            with col3:
-                st.markdown("**Google Ads Tables**")
-                gads_tables = {k: v for k, v in table_info.items() if k.startswith('gads_')}
-                if gads_tables:
-                    for table, count in gads_tables.items():
-                        st.text(f"  {table}: {count:,} rows")
-                else:
-                    st.text("  No Google Ads tables yet")
-    else:
-        st.warning(f"⚠️ Database not found: {duckdb_path}")
-    
-    st.divider()
-    
-    # Connection Tests
-    st.subheader("Connection Tests")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("Test GA4", use_container_width=True):
-            if ga4_config:
-                with st.spinner("Testing GA4..."):
-                    try:
-                        from google.analytics.data_v1beta import BetaAnalyticsDataClient
-                        from google.analytics.data_v1beta.types import DateRange, Dimension, Metric, RunReportRequest
-                        client = BetaAnalyticsDataClient()
-                        request = RunReportRequest(
-                            property=f"properties/{ga4_config.ga4_property_id}",
-                            dimensions=[Dimension(name="date")],
-                            metrics=[Metric(name="sessions")],
-                            date_ranges=[DateRange(start_date="yesterday", end_date="yesterday")],
-                        )
-                        client.run_report(request)
-                        st.success("✅ GA4 Connected!")
-                    except Exception as e:
-                        st.error(f"❌ {e}")
-            else:
-                st.warning("GA4 not configured")
-    
-    with col2:
-        if st.button("Test GSC", use_container_width=True):
-            if gsc_config:
-                with st.spinner("Testing GSC..."):
-                    try:
-                        from etl.gsc_extractor import GSCExtractor
-                        extractor = GSCExtractor(str(gsc_config.credentials_path), gsc_config.site_url)
-                        success, msg = extractor.test_connection()
-                        if success:
-                            st.success("✅ GSC Connected!")
-                        else:
-                            st.error(f"❌ {msg}")
-                    except Exception as e:
-                        st.error(f"❌ {e}")
-            else:
-                st.warning("GSC not configured")
-    
-    with col3:
-        if st.button("Test Google Ads", use_container_width=True):
-            if gads_config:
-                with st.spinner("Testing Google Ads..."):
-                    try:
-                        from etl.gads_config import get_gads_client
-                        from etl.gads_extractor import GAdsExtractor
-                        client = get_gads_client()
-                        extractor = GAdsExtractor(client, gads_config.customer_id, gads_config.login_customer_id)
-                        success, msg = extractor.test_connection()
-                        if success:
-                            st.success("✅ Google Ads Connected!")
-                        else:
-                            st.error(f"❌ {msg}")
-                    except Exception as e:
-                        st.error(f"❌ {e}")
-            else:
-                st.warning("Google Ads not configured")
-    
-    st.divider()
-    
-    # ETL Commands Reference
-    st.subheader("ETL Commands Reference")
-    
-    st.markdown("""
-    **GA4 Data Extraction:**
-    ```bash
-    python scripts/run_etl_unified.py --source ga4 --lookback-days 30   # Last 30 days
-    python scripts/run_etl_unified.py --source ga4 --comprehensive --lifetime  # All metrics, lifetime
-    ```
-    
-    **GSC Data Extraction:**
-    ```bash
-    python scripts/test_gsc_connection.py                  # Test connection
-    python scripts/run_etl_gsc.py --lifetime               # All lifetime data
-    ```
-    
-    **Google Ads Data Extraction:**
-    ```bash
-    python scripts/test_gads_connection.py                 # Test connection
-    python scripts/run_etl_gads.py --lifetime              # All lifetime data
-    python scripts/run_etl_gads.py --lookback-days 90      # Last 90 days
-    ```
-    """)
 
 
 # ============================================
@@ -2784,58 +3118,110 @@ def main():
         
         st.divider()
         
-        # Navigation
-        page = st.radio(
-            "Navigation",
-            options=[
-                "📈 Executive Dashboard",
-                "📊 GA4 Analytics", 
-                "🔍 Search Console (SEO)", 
-                "💰 Google Ads (PPC)", 
-                "📘 Meta Ads",
-                "🐦 Twitter/X",
-                "🔧 ETL Control",
-                "⚙️ Settings"
-            ],
-            index=0
-        )
+        # ========================================
+        # Grouped Navigation with Expanders
+        # ========================================
+        
+        # Initialize page state if not exists
+        if 'current_page' not in st.session_state:
+            st.session_state.current_page = "📈 Executive Dashboard"
+        
+        # Helper function to create navigation button
+        def nav_button(label: str, key: str):
+            """Create a navigation button that updates the current page."""
+            is_active = st.session_state.current_page == label
+            button_type = "primary" if is_active else "secondary"
+            if st.button(label, key=key, use_container_width=True, type=button_type):
+                st.session_state.current_page = label
+                st.rerun()
+        
+        # Executive Dashboard (always visible at top)
+        nav_button("📈 Executive Dashboard", "nav_exec")
+        
+        st.markdown("")  # Spacing
+        
+        # Web & App Analytics Group
+        with st.expander("🌐 **Web & App**", expanded=True):
+            nav_button("📱 App Analytics", "nav_app_analytics")
+            nav_button("📊 GA4 Analytics", "nav_ga4")
+            nav_button("🛩️ AppsFlyer", "nav_appsflyer")
+        
+        # Marketing Platforms Group
+        with st.expander("📣 **Marketing**", expanded=True):
+            nav_button("💰 Google Ads (PPC)", "nav_gads")
+            nav_button("🔍 Search Console (SEO)", "nav_gsc")
+            nav_button("📘 Meta Ads", "nav_meta")
+            nav_button("🐦 Twitter/X", "nav_twitter")
+        
+        # Lifecycle Mega-Pages (Phase 3)
+        with st.expander("🔄 **Lifecycle**", expanded=True):
+            nav_button("🚀 Acquire", "nav_acquire")
+            nav_button("⚡ Activate", "nav_activate")
+            nav_button("💰 Monetize", "nav_monetize")
+
+        # Advanced Analytics Group
+        with st.expander("🧠 **Advanced Analytics**", expanded=False):
+            nav_button("🔄 Behavioral Analysis", "nav_behavioral")
+            nav_button("📈 Forecasting", "nav_forecasting")
+            nav_button("🎯 Clustering", "nav_clustering")
+        
+        # Miscellaneous Group
+        with st.expander("⚙️ **Tools**", expanded=False):
+            nav_button("🔧 ETL Control", "nav_etl")
+            nav_button("📖 Glossary", "nav_glossary")
+        
+        # Get current page from session state
+        page = st.session_state.current_page
         
         st.divider()
         
-        # Quick Status
-        st.subheader("Data Status")
+        # ========================================
+        # Quick Data Status
+        # ========================================
+        st.subheader("📊 Data Status")
         
         table_info = get_table_info(duckdb_path)
         ga4_rows = sum(v for k, v in table_info.items() if k.startswith('ga4_'))
         gsc_rows = sum(v for k, v in table_info.items() if k.startswith('gsc_'))
         gads_rows = sum(v for k, v in table_info.items() if k.startswith('gads_'))
         meta_rows = sum(v for k, v in table_info.items() if k.startswith('meta_'))
+        af_rows = sum(v for k, v in table_info.items() if k.startswith('af_'))
         twitter_rows = sum(v for k, v in table_info.items() if k.startswith('twitter_'))
         
-        if ga4_rows > 0:
-            st.success(f"GA4: {ga4_rows:,} rows")
-        else:
-            st.warning("GA4: No data")
+        # Compact status display using columns
+        status_col1, status_col2 = st.columns(2)
         
-        if gsc_rows > 0:
-            st.success(f"GSC: {gsc_rows:,} rows")
-        else:
-            st.warning("GSC: No data")
+        with status_col1:
+            if ga4_rows > 0:
+                st.caption(f"✅ GA4: {ga4_rows:,}")
+            else:
+                st.caption("⚠️ GA4: —")
+            
+            if gsc_rows > 0:
+                st.caption(f"✅ GSC: {gsc_rows:,}")
+            else:
+                st.caption("⚠️ GSC: —")
+            
+            if gads_rows > 0:
+                st.caption(f"✅ GAds: {gads_rows:,}")
+            else:
+                st.caption("⚠️ GAds: —")
         
-        if gads_rows > 0:
-            st.success(f"Google Ads: {gads_rows:,} rows")
-        else:
-            st.warning("Google Ads: No data")
-        
-        if meta_rows > 0:
-            st.success(f"Meta Ads: {meta_rows:,} rows")
-        else:
-            st.warning("Meta Ads: No data")
-        
-        if twitter_rows > 0:
-            st.success(f"Twitter: {twitter_rows:,} rows")
-        else:
-            st.warning("Twitter: No data")
+        with status_col2:
+            if meta_rows > 0:
+                st.caption(f"✅ Meta: {meta_rows:,}")
+            else:
+                st.caption("⚠️ Meta: —")
+            
+            if af_rows > 0:
+                st.caption(f"✅ AF: {af_rows:,}")
+            else:
+                st.caption("⚠️ AF: —")
+            
+            if twitter_rows > 0:
+                st.caption(f"✅ Twitter: {twitter_rows:,}")
+            else:
+                st.caption("⚠️ Twitter: —")
         
         st.divider()
         
@@ -2848,6 +3234,9 @@ def main():
     # Main Content
     if page == "📈 Executive Dashboard":
         render_executive_dashboard(duckdb_path)
+    
+    elif page == "📱 App Analytics":
+        render_app_analytics(duckdb_path)
     
     elif page == "📊 GA4 Analytics":
         if ga4_config:
@@ -2866,6 +3255,9 @@ def main():
     elif page == "📘 Meta Ads":
         render_meta_dashboard(meta_config, duckdb_path)
     
+    elif page == "🛩️ AppsFlyer":
+        render_appsflyer_dashboard(duckdb_path)
+    
     elif page == "🐦 Twitter/X":
         twitter_config, twitter_error = load_twitter_configuration()
         render_twitter_dashboard(twitter_config, duckdb_path)
@@ -2873,8 +3265,33 @@ def main():
     elif page == "🔧 ETL Control":
         render_etl_control_panel(duckdb_path)
     
-    elif page == "⚙️ Settings":
-        render_settings_page(ga4_config, gsc_config, gads_config, duckdb_path)
+    elif page == "📖 Glossary":
+        from app.components.glossary import render_glossary
+        render_glossary()
+    
+    # ========================================
+    # Lifecycle Mega-Pages (Phase 3)
+    # ========================================
+    elif page == "🚀 Acquire":
+        render_acquire_page(duckdb_path)
+
+    elif page == "⚡ Activate":
+        render_activate_page(duckdb_path)
+
+    elif page == "💰 Monetize":
+        render_monetize_page(duckdb_path)
+
+    # ========================================
+    # Advanced Analytics Pages
+    # ========================================
+    elif page == "🔄 Behavioral Analysis":
+        render_behavioral_analysis(duckdb_path)
+    
+    elif page == "📈 Forecasting":
+        render_forecasting(duckdb_path)
+    
+    elif page == "🎯 Clustering":
+        render_clustering(duckdb_path)
 
 
 if __name__ == "__main__":
