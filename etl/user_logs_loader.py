@@ -19,12 +19,14 @@ Usage:
 
 import csv
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 import pandas as pd
+import requests
 
 # Required CSV files (same names for future runs)
 REQUIRED_CSV_FILES = [
@@ -371,7 +373,9 @@ def load_customer(
     df["registration_ts"] = df["Created Date"].apply(_parse_ts)
     df = df.dropna(subset=["registration_ts"])
     df["registration_ip"] = df["Registration IP"].astype(str).str.strip()
-    df["registration_country_code"] = None  # TODO: enrich from IP
+    # Country is enriched in a post-load step (enrich_ip_geo) rather than
+    # inline, because it requires network calls. Set NULL here as a placeholder.
+    df["registration_country_code"] = None
     df["registration_country_name"] = None
     df["mobile_verified"] = False  # set later from redeem-mobile-verification
     df["mobile_verified_at"] = pd.NaT
@@ -932,6 +936,108 @@ def refresh_mart_tables(
 
 
 # ============================================
+# IP Geolocation Enrichment
+# ============================================
+
+IP_BATCH_SIZE = 100       # ip-api.com free tier limit per request
+IP_REQUEST_DELAY = 1.5    # seconds between batches (stay under 45 req/min)
+
+
+def _fetch_ip_batch(ips: List[str], log: logging.Logger) -> Dict[str, Dict[str, str]]:
+    """
+    Call ip-api.com/batch for up to 100 IPs.
+
+    Returns dict mapping ip -> {"country_code": "SG", "country_name": "Singapore"}.
+    Only includes IPs where the lookup succeeded.
+    """
+    payload = [{"query": ip, "fields": "query,status,countryCode,country"} for ip in ips]
+
+    try:
+        resp = requests.post("http://ip-api.com/batch", json=payload, timeout=30)
+        resp.raise_for_status()
+        results = resp.json()
+    except Exception as exc:
+        log.error(f"ip-api.com batch request failed: {exc}")
+        return {}
+
+    mapping: Dict[str, Dict[str, str]] = {}
+    for item in results:
+        if item.get("status") == "success":
+            mapping[item["query"]] = {
+                "country_code": item.get("countryCode", ""),
+                "country_name": item.get("country", ""),
+            }
+    return mapping
+
+
+def enrich_ip_geo(
+    conn: duckdb.DuckDBPyConnection,
+    log: logging.Logger,
+    dry_run: bool = False,
+) -> int:
+    """
+    Enrich core.dim_user rows that have registration_ip but no country data.
+
+    Uses the free ip-api.com batch endpoint (max 100 IPs/request).
+    Returns the number of distinct IPs successfully enriched.
+    """
+    # Find IPs that still need enrichment
+    rows = conn.execute("""
+        SELECT DISTINCT registration_ip
+        FROM core.dim_user
+        WHERE registration_ip IS NOT NULL
+          AND registration_ip != ''
+          AND (registration_country_code IS NULL OR registration_country_code = '')
+    """).fetchall()
+
+    unique_ips = [r[0] for r in rows]
+    log.info(f"IP Geo: {len(unique_ips)} unique IPs need enrichment")
+
+    if not unique_ips:
+        return 0
+
+    if dry_run:
+        log.info("[DRY-RUN] Would enrich IPs via ip-api.com")
+        return len(unique_ips)
+
+    # Batch lookup
+    all_results: Dict[str, Dict[str, str]] = {}
+    total_batches = (len(unique_ips) + IP_BATCH_SIZE - 1) // IP_BATCH_SIZE
+
+    for batch_idx in range(total_batches):
+        start = batch_idx * IP_BATCH_SIZE
+        batch_ips = unique_ips[start : start + IP_BATCH_SIZE]
+
+        log.info(f"  Batch {batch_idx + 1}/{total_batches}: {len(batch_ips)} IPs")
+        batch_results = _fetch_ip_batch(batch_ips, log)
+        all_results.update(batch_results)
+
+        # Rate-limit (skip delay on last batch)
+        if batch_idx < total_batches - 1:
+            time.sleep(IP_REQUEST_DELAY)
+
+    log.info(f"IP Geo: resolved {len(all_results)}/{len(unique_ips)} IPs")
+
+    # Write results back to dim_user
+    enriched = 0
+    for ip, geo in all_results.items():
+        conn.execute(
+            """
+            UPDATE core.dim_user
+            SET registration_country_code = ?,
+                registration_country_name = ?
+            WHERE registration_ip = ?
+              AND (registration_country_code IS NULL OR registration_country_code = '')
+            """,
+            [geo["country_code"], geo["country_name"], ip],
+        )
+        enriched += 1
+
+    log.info(f"IP Geo: updated {enriched} distinct IPs in core.dim_user")
+    return enriched
+
+
+# ============================================
 # Main ETL entry
 # ============================================
 
@@ -988,6 +1094,15 @@ def run_user_logs_etl(
         create_schemas_and_tables(conn)
         load_customer(conn, csv_path, log, dry_run=dry_run)
         apply_mobile_verified(conn, csv_path, log, dry_run=dry_run)
+
+        # Enrich registration IPs with country data (calls ip-api.com)
+        try:
+            enrich_ip_geo(conn, log, dry_run=dry_run)
+        except Exception as geo_err:
+            # Non-fatal: geo enrichment failure should not block the ETL
+            log.warning(f"IP geo-enrichment failed (non-fatal): {geo_err}")
+            stats["errors"].append(f"IP geo-enrichment skipped: {geo_err}")
+
         stats["dim_user"] = conn.execute("SELECT count(*) FROM core.dim_user").fetchone()[0]
 
         load_activity(conn, csv_path, log, dry_run=dry_run)

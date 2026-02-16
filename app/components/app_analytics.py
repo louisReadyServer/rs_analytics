@@ -30,8 +30,6 @@ import duckdb
 import logging
 import plotly.express as px
 
-from rs_analytics.db.client import DuckDBClient
-from rs_analytics.metrics.cohorts import CohortEngine
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -1681,6 +1679,224 @@ def render_user_demographics(duckdb_path: str, start_date: date, end_date: date)
 
 
 # ============================================
+# Component 5b: User Location Distribution
+# ============================================
+
+def render_user_location(duckdb_path: str, start_date: date, end_date: date):
+    """
+    Render a pie chart showing the geographic distribution of users
+    based on their registration IP address (enriched to country).
+
+    Data source: core.dim_user.registration_country_name
+    The country is derived from registration_ip via the ip-api.com
+    geolocation service (see scripts/enrich_ip_geo.py).
+
+    Shows:
+        - Pie chart of user count by country
+        - Top countries table with counts and percentages
+        - Small countries grouped into "Other" for readability
+    """
+
+    st.header("🌍 User Location")
+    st.caption(
+        f"*Geographic distribution of users who signed up "
+        f"{format_date_range_label(start_date, end_date)}*"
+    )
+
+    with st.expander("ℹ️ About Location Data", expanded=False):
+        st.markdown("""
+        **How location is determined:**
+
+        - Country is derived from the user's **registration IP address**
+          using the ip-api.com geolocation service.
+        - This reflects the user's location **at the time of sign-up**, not
+          their current location.
+        - VPN or proxy usage may result in an inaccurate country.
+
+        **Why this matters:**
+        - Identify your strongest geographic markets
+        - Tailor marketing spend to high-value regions
+        - Detect unexpected traffic sources
+        """)
+
+    # Format dates for SQL
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+
+    # Query country distribution for users in the selected period
+    location_query = f"""
+    SELECT
+        COALESCE(NULLIF(registration_country_name, ''), 'Unknown') AS country,
+        COUNT(*) AS user_count
+    FROM core.dim_user
+    WHERE DATE(registration_ts) >= '{start_str}'
+      AND DATE(registration_ts) <= '{end_str}'
+    GROUP BY country
+    ORDER BY user_count DESC
+    """
+
+    location_df = load_app_data(duckdb_path, location_query, suppress_error=True)
+
+    if location_df is None or location_df.empty:
+        st.info(
+            f"No location data available for "
+            f"{format_date_range_label(start_date, end_date)}. "
+            "Run `python scripts/enrich_ip_geo.py` to populate country data."
+        )
+        return
+
+    total_users = int(location_df["user_count"].sum())
+
+    if total_users == 0:
+        st.info("No users found in the selected period.")
+        return
+
+    # ── Group small countries into "Other" ──────────────────────
+    # Keep the top 8 countries individually; merge the rest into "Other"
+    TOP_N = 8
+    if len(location_df) > TOP_N:
+        top_df = location_df.head(TOP_N).copy()
+        other_count = int(location_df.iloc[TOP_N:]["user_count"].sum())
+        other_row = pd.DataFrame([{"country": "Other", "user_count": other_count}])
+        chart_df = pd.concat([top_df, other_row], ignore_index=True)
+    else:
+        chart_df = location_df.copy()
+
+    # Add percentage column
+    chart_df["percentage"] = (chart_df["user_count"] / total_users * 100).round(1)
+
+    # ── Layout: pie chart on the left, table on the right ───────
+    col_chart, col_table = st.columns([3, 2])
+
+    with col_chart:
+        import plotly.graph_objects as go
+
+        # Color palette — visually distinct, professional
+        colors = [
+            "#4A90D9", "#67B26F", "#F4A261", "#E76F51",
+            "#9B59B6", "#1ABC9C", "#E74C3C", "#3498DB",
+            "#E0E0E0",  # "Other" gets a neutral gray
+        ]
+
+        fig = go.Figure(data=[go.Pie(
+            labels=chart_df["country"],
+            values=chart_df["user_count"],
+            hole=0.4,                           # donut style
+            marker_colors=colors[: len(chart_df)],
+            textinfo="percent+label",
+            texttemplate="%{label}<br>%{percent:.1%}",
+            hovertemplate=(
+                "<b>%{label}</b><br>"
+                "Users: %{value:,}<br>"
+                "Share: %{percent:.1%}"
+                "<extra></extra>"
+            ),
+            sort=False,                         # keep descending order
+        )])
+
+        fig.update_layout(
+            title=dict(
+                text="Users by Country",
+                x=0.5,
+                xanchor="center",
+            ),
+            margin=dict(l=10, r=10, t=50, b=10),
+            height=420,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.05,
+                xanchor="center",
+                x=0.5,
+            ),
+            annotations=[dict(
+                text=f"{total_users:,}<br>Users",
+                x=0.5, y=0.5,
+                font_size=16,
+                showarrow=False,
+            )],
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_table:
+        st.markdown("#### Top Countries")
+
+        # Build a clean display table from the FULL distribution
+        # (not the grouped chart_df) so the user sees all countries
+        table_df = location_df.copy()
+        table_df["percentage"] = (
+            table_df["user_count"] / total_users * 100
+        ).round(1)
+        table_df = table_df.rename(columns={
+            "country": "Country",
+            "user_count": "Users",
+            "percentage": "Share %",
+        })
+
+        st.dataframe(
+            table_df,
+            hide_index=True,
+            use_container_width=True,
+            height=380,  # match pie chart height roughly
+            column_config={
+                "Country": st.column_config.TextColumn("Country"),
+                "Users": st.column_config.NumberColumn("Users", format="%d"),
+                "Share %": st.column_config.ProgressColumn(
+                    "Share %",
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f%%",
+                ),
+            },
+        )
+
+    # ── Summary KPIs row ────────────────────────────────────────
+    st.divider()
+    st.markdown("### 📊 Location Summary")
+
+    num_countries = len(location_df)
+    top_country = location_df.iloc[0]["country"]
+    top_country_pct = location_df.iloc[0]["user_count"] / total_users * 100
+    # Concentration: what % of users come from the top 3 countries?
+    top3_pct = (
+        location_df.head(3)["user_count"].sum() / total_users * 100
+    )
+
+    summary_cols = st.columns(4)
+
+    with summary_cols[0]:
+        st.metric(
+            "Total Countries",
+            f"{num_countries}",
+            help="Number of distinct countries in this period",
+        )
+
+    with summary_cols[1]:
+        st.metric(
+            "Top Country",
+            top_country,
+            delta=f"{top_country_pct:.1f}% of users",
+            help="Country with the most signups",
+        )
+
+    with summary_cols[2]:
+        st.metric(
+            "Top 3 Concentration",
+            f"{top3_pct:.1f}%",
+            help="Share of signups from the top 3 countries",
+        )
+
+    with summary_cols[3]:
+        st.metric(
+            "Total Users",
+            f"{total_users:,}",
+            help="Users who signed up in the selected period",
+        )
+
+
+# ============================================
 # Component 6: Top Users Table
 # ============================================
 
@@ -1984,270 +2200,342 @@ def render_weekly_overview(duckdb_path: str, start_date: date, end_date: date):
 
 def render_cohort_analysis(duckdb_path: str):
     """
-    Render cohort funnel analysis with time-to-convert windows.
+    Render country-based cohort analysis.
 
-    Shows:
-    1. Cohort summary table (conversion rates per signup cohort)
-    2. Time-to-convert curves (cumulative % over days since signup)
-    3. Conversion time distribution (histogram of days to first payment)
-    4. Retention heatmap (optional, collapsible)
-
-    Uses CohortEngine from rs_analytics.metrics.cohorts.
+    A "cohort" here is a country of registration, not signup week/month.
+    This view helps compare market quality and monetization efficiency.
     """
-    st.header("📊 Cohort Analysis")
-    st.caption("*How quickly do signup cohorts convert through the lifecycle?*")
+    st.header("📊 Country Cohort Analysis")
+    st.caption("*Compare lifecycle quality by country: conversion speed, retention, and revenue readiness.*")
 
     with st.expander("ℹ️ How to read this section", expanded=False):
         st.markdown("""
-        **Cohorts** group users by their signup week (or month).
-        For each cohort, we track:
+        **What is a country cohort?**
+        - A cohort is all users who registered from the same country.
+        - This reveals market-level differences in onboarding, activation, and monetization.
 
-        - **Verified %** — users who completed mobile verification
-        - **First VPS %** — users who launched at least one VPS
-        - **First Paid %** — users who made at least one real payment
+        **Core metrics:**
+        - **Verified %**: users who completed mobile verification.
+        - **First VPS %**: users who launched at least one VPS.
+        - **First Paid %**: users who made at least one real payment.
+        - **Median Days**: typical time from signup to each milestone.
 
-        The **time-to-convert** chart shows HOW LONG it takes users
-        to reach each stage after signing up. Steep early curves = fast activation.
-
-        **Median Days** columns show the typical number of days
-        from signup to each milestone (only for users who converted).
+        **Interpretation guide:**
+        - High signup + low paid % => acquisition quality issue or pricing mismatch.
+        - Fast early curves => healthier activation in that country.
+        - Low retention by country => product-market fit or local UX friction.
         """)
 
     # Controls
-    col_gran, col_min = st.columns([2, 1])
-    with col_gran:
-        granularity = st.selectbox(
-            "Cohort grouping",
-            options=["week", "month"],
-            index=0,
-            key="cohort_granularity",
-            help="Group signups by week or month",
-        )
+    col_min, col_days, col_stage = st.columns([1, 1, 1])
     with col_min:
         min_size = st.number_input(
-            "Min cohort size",
-            min_value=1, max_value=50, value=3,
-            key="cohort_min_size",
-            help="Hide cohorts smaller than this to reduce noise",
+            "Min country size",
+            min_value=5,
+            max_value=500,
+            value=20,
+            step=5,
+            key="country_cohort_min_size",
+            help="Hide countries with fewer signups to reduce noise.",
+        )
+    with col_days:
+        max_days = st.slider(
+            "Max days to track",
+            min_value=14,
+            max_value=180,
+            value=90,
+            step=7,
+            key="country_cohort_max_days",
+            help="Window for time-to-convert analysis.",
+        )
+    with col_stage:
+        stage_for_curve = st.selectbox(
+            "Curve stage",
+            options=["verify", "vps", "paid"],
+            format_func=lambda x: {"verify": "Mobile Verified", "vps": "First VPS", "paid": "First Paid"}[x],
+            key="country_cohort_stage",
         )
 
-    # Initialize cohort engine
-    client = DuckDBClient(duckdb_path)
-    engine = CohortEngine(client)
+    # User-level milestones by country
+    milestones_query = f"""
+    WITH first_vps AS (
+        SELECT user_id, MIN(event_ts) AS first_vps_at
+        FROM core.fact_user_activity
+        WHERE activity_type = 'LAUNCH_SERVER'
+        GROUP BY user_id
+    ),
+    first_paid AS (
+        SELECT user_id, MIN(payment_ts) AS first_paid_at
+        FROM core.fact_payment_topup
+        GROUP BY user_id
+    )
+    SELECT
+        u.user_id,
+        COALESCE(NULLIF(u.registration_country_name, ''), 'Unknown') AS country,
+        u.registration_ts,
+        u.mobile_verified_at AS verified_at,
+        fv.first_vps_at,
+        fp.first_paid_at,
+        DATEDIFF('day', u.registration_ts, u.mobile_verified_at) AS days_to_verify,
+        DATEDIFF('day', u.registration_ts, fv.first_vps_at) AS days_to_vps,
+        DATEDIFF('day', u.registration_ts, fp.first_paid_at) AS days_to_paid
+    FROM core.dim_user u
+    LEFT JOIN first_vps fv ON u.user_id = fv.user_id
+    LEFT JOIN first_paid fp ON u.user_id = fp.user_id
+    WHERE u.registration_ts IS NOT NULL
+    """
+    user_df = load_app_data(duckdb_path, milestones_query, suppress_error=True)
+    if user_df is None or user_df.empty:
+        st.info("No cohort data found. Ensure user logs ETL has been run.")
+        return
+
+    # Aggregate country summary
+    summary_df = (
+        user_df.groupby("country", dropna=False)
+        .agg(
+            signups=("user_id", "count"),
+            verified_count=("verified_at", lambda s: s.notna().sum()),
+            first_vps_count=("first_vps_at", lambda s: s.notna().sum()),
+            first_paid_count=("first_paid_at", lambda s: s.notna().sum()),
+            median_days_to_verify=("days_to_verify", "median"),
+            median_days_to_vps=("days_to_vps", "median"),
+            median_days_to_paid=("days_to_paid", "median"),
+        )
+        .reset_index()
+    )
+    summary_df = summary_df[summary_df["signups"] >= min_size].copy()
+    if summary_df.empty:
+        st.warning("No countries meet the minimum cohort size. Lower the filter and try again.")
+        return
+
+    # Rate columns
+    summary_df["verified_pct"] = (100 * summary_df["verified_count"] / summary_df["signups"]).round(1)
+    summary_df["first_vps_pct"] = (100 * summary_df["first_vps_count"] / summary_df["signups"]).round(1)
+    summary_df["first_paid_pct"] = (100 * summary_df["first_paid_count"] / summary_df["signups"]).round(1)
+    summary_df = summary_df.sort_values(["first_paid_pct", "signups"], ascending=[False, False])
 
     # ── Tab layout ──────────────────────────────────────────
     tab1, tab2, tab3, tab4 = st.tabs([
-        "Summary Table", "Time-to-Convert", "Distribution", "Retention"
+        "Summary Table", "Conversion Benchmarks", "Time-to-Convert", "Retention by Country"
     ])
 
-    # ── Tab 1: Cohort Summary ───────────────────────────────
+    # ── Tab 1: Country Summary ───────────────────────────────
     with tab1:
-        summary_df = engine.cohort_summary(
-            granularity=granularity,
-            min_cohort_size=min_size,
+        st.markdown("#### Country Cohort Conversion Rates")
+        display_df = summary_df.rename(columns={
+            "country": "Country",
+            "signups": "Signups",
+            "verified_pct": "Verified %",
+            "first_vps_pct": "First VPS %",
+            "first_paid_pct": "First Paid %",
+            "median_days_to_verify": "Med. Days -> Verify",
+            "median_days_to_vps": "Med. Days -> VPS",
+            "median_days_to_paid": "Med. Days -> Paid",
+        })
+        cols_to_show = [
+            "Country", "Signups",
+            "Verified %", "First VPS %", "First Paid %",
+            "Med. Days -> Verify", "Med. Days -> VPS", "Med. Days -> Paid",
+        ]
+        st.dataframe(
+            display_df[cols_to_show],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Verified %": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f%%"),
+                "First VPS %": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f%%"),
+                "First Paid %": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f%%"),
+            },
         )
 
-        if summary_df is None or summary_df.empty:
-            st.info("No cohort data found. Ensure user logs ETL has been run.")
-        else:
-            st.markdown("#### Cohort Conversion Rates")
+    # ── Tab 2: Conversion Benchmarks ──────────────────────────
+    with tab2:
+        top_n = st.slider("Top countries to compare", 5, 15, 10, key="country_cohort_top_n")
+        compare_df = summary_df.sort_values("signups", ascending=False).head(top_n).copy()
+        fig = px.bar(
+            compare_df.melt(
+                id_vars=["country", "signups"],
+                value_vars=["verified_pct", "first_vps_pct", "first_paid_pct"],
+                var_name="metric",
+                value_name="rate",
+            ),
+            x="country",
+            y="rate",
+            color="metric",
+            barmode="group",
+            labels={"country": "Country", "rate": "Conversion %", "metric": "Stage"},
+            title="Country Conversion Benchmark (by signup volume)",
+        )
+        fig.update_layout(height=420, margin=dict(t=50, b=20))
+        fig.update_traces(hovertemplate="<b>%{x}</b><br>%{fullData.name}: %{y:.1f}%<extra></extra>")
+        st.plotly_chart(fig, use_container_width=True)
 
-            # Format for display
-            display_df = summary_df.copy()
-            display_df["cohort_start"] = pd.to_datetime(display_df["cohort_start"]).dt.strftime("%Y-%m-%d")
-
-            # Rename columns for readability
-            display_df = display_df.rename(columns={
-                "cohort_start": "Cohort",
-                "cohort_size": "Signups",
-                "verified_pct": "Verified %",
-                "first_vps_pct": "First VPS %",
-                "first_paid_pct": "First Paid %",
-                "median_days_to_verify": "Med. Days → Verify",
-                "median_days_to_vps": "Med. Days → VPS",
-                "median_days_to_paid": "Med. Days → Paid",
-            })
-
-            # Drop raw count columns for cleaner display
-            cols_to_show = [
-                "Cohort", "Signups",
-                "Verified %", "First VPS %", "First Paid %",
-                "Med. Days → Verify", "Med. Days → VPS", "Med. Days → Paid",
-            ]
-            display_df = display_df[[c for c in cols_to_show if c in display_df.columns]]
-
-            st.dataframe(
-                display_df,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Verified %": st.column_config.ProgressColumn(
-                        min_value=0, max_value=100, format="%.1f%%",
-                    ),
-                    "First VPS %": st.column_config.ProgressColumn(
-                        min_value=0, max_value=100, format="%.1f%%",
-                    ),
-                    "First Paid %": st.column_config.ProgressColumn(
-                        min_value=0, max_value=100, format="%.1f%%",
-                    ),
-                },
+        best_paid = summary_df.iloc[0]
+        worst_paid = summary_df.iloc[-1]
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.success(
+                f"Best paid conversion: **{best_paid['country']}** "
+                f"({best_paid['first_paid_pct']:.1f}% from {int(best_paid['signups']):,} signups)"
+            )
+        with col_b:
+            st.warning(
+                f"Weakest paid conversion: **{worst_paid['country']}** "
+                f"({worst_paid['first_paid_pct']:.1f}% from {int(worst_paid['signups']):,} signups)"
             )
 
-            # Key observations
-            if len(summary_df) >= 2:
-                latest = summary_df.iloc[-1]
-                previous = summary_df.iloc[-2]
-                paid_change = (latest.get("first_paid_pct", 0) or 0) - (previous.get("first_paid_pct", 0) or 0)
-                if paid_change > 2:
-                    st.success(f"Latest cohort paid conversion up +{paid_change:.1f}pp vs previous")
-                elif paid_change < -2:
-                    st.warning(f"Latest cohort paid conversion down {paid_change:.1f}pp vs previous")
+    # ── Tab 3: Time-to-Convert by Country ─────────────────────
+    with tab3:
+        st.markdown("#### Cumulative Conversion Curves by Country")
+        st.caption("X = days since signup, Y = cumulative % of users who reached stage")
 
-    # ── Tab 2: Time-to-Convert Curves ───────────────────────
-    with tab2:
-        st.markdown("#### Cumulative Conversion Over Time")
-        st.caption("X = days since signup, Y = % of cohort who reached each stage")
+        stage_col_map = {
+            "verify": "days_to_verify",
+            "vps": "days_to_vps",
+            "paid": "days_to_paid",
+        }
+        stage_name_map = {
+            "verify": "Mobile Verified",
+            "vps": "First VPS",
+            "paid": "First Paid",
+        }
+        stage_col = stage_col_map[stage_for_curve]
+        stage_title = stage_name_map[stage_for_curve]
 
-        max_days = st.slider(
-            "Max days to track", 14, 180, 90,
-            key="cohort_max_days",
+        eligible_countries = (
+            summary_df.sort_values("signups", ascending=False)["country"]
+            .head(8)
+            .tolist()
         )
-
-        progression_df = engine.cohort_progression(
-            granularity=granularity,
-            max_days=max_days,
-            bucket_days=7,
-            min_cohort_size=min_size,
-        )
-
-        if progression_df is None or progression_df.empty:
-            st.info("No progression data available.")
+        curve_source = user_df[user_df["country"].isin(eligible_countries)].copy()
+        if curve_source.empty:
+            st.info("No data for conversion curves.")
         else:
-            # One chart per stage
-            for stage_name in ["Verified", "First VPS", "First Paid"]:
-                stage_data = progression_df[progression_df["stage"] == stage_name]
-                if stage_data.empty:
+            # Build cumulative % rows
+            bucket_values = list(range(0, max_days + 1, 7))
+            curve_rows = []
+            for country in eligible_countries:
+                country_users = curve_source[curve_source["country"] == country]
+                cohort_size = len(country_users)
+                if cohort_size == 0:
                     continue
-
-                stage_data = stage_data.copy()
-                stage_data["cohort_label"] = pd.to_datetime(
-                    stage_data["cohort_start"]
-                ).dt.strftime("%Y-%m-%d")
-
+                for day_bucket in bucket_values:
+                    converted = (
+                        country_users[stage_col].notna()
+                        & (country_users[stage_col] <= day_bucket)
+                    ).sum()
+                    curve_rows.append(
+                        {
+                            "country": country,
+                            "days_bucket": day_bucket,
+                            "cumulative_pct": round(100 * converted / cohort_size, 1),
+                            "cohort_size": cohort_size,
+                        }
+                    )
+            curve_df = pd.DataFrame(curve_rows)
+            if curve_df.empty:
+                st.info("No conversions found for the selected stage.")
+            else:
                 fig = px.line(
-                    stage_data,
+                    curve_df,
                     x="days_bucket",
                     y="cumulative_pct",
-                    color="cohort_label",
-                    title=f"Time to {stage_name}",
+                    color="country",
+                    title=f"Time to {stage_title} by Country",
                     labels={
                         "days_bucket": "Days Since Signup",
                         "cumulative_pct": "Cumulative %",
-                        "cohort_label": "Cohort",
+                        "country": "Country",
                     },
                 )
-                fig.update_layout(
-                    height=350,
-                    margin=dict(t=40, b=30),
-                    legend=dict(orientation="h", y=-0.2),
-                )
+                fig.update_layout(height=420, margin=dict(t=50, b=20), legend=dict(orientation="h", y=-0.25))
                 st.plotly_chart(fig, use_container_width=True)
 
-    # ── Tab 3: Distribution ─────────────────────────────────
-    with tab3:
-        st.markdown("#### Time-to-Convert Distribution")
-        st.caption("How many days do users take to reach each milestone?")
-
-        dist_stage = st.selectbox(
-            "Stage",
-            options=["verify", "vps", "paid"],
-            format_func=lambda x: {"verify": "Mobile Verified", "vps": "First VPS", "paid": "First Payment"}[x],
-            key="dist_stage",
-        )
-
-        dist_df = engine.time_to_convert_distribution(
-            stage=dist_stage,
-            max_days=max_days if "max_days" in dir() else 90,
-        )
-
-        if dist_df is None or dist_df.empty:
-            st.info(f"No conversion data for this stage.")
-        else:
-            fig = px.histogram(
-                dist_df,
-                x="days_to_convert",
-                nbins=min(30, dist_df["days_to_convert"].max()),
-                title=f"Days from Signup to {dist_stage.replace('_', ' ').title()}",
-                labels={"days_to_convert": "Days", "count": "Users"},
-            )
-            fig.update_layout(
-                height=350,
-                margin=dict(t=40, b=30),
-                bargap=0.1,
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Summary stats
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Median", f"{dist_df['days_to_convert'].median():.0f} days")
-            with col2:
-                st.metric("Mean", f"{dist_df['days_to_convert'].mean():.1f} days")
-            with col3:
-                st.metric("75th Pctl", f"{dist_df['days_to_convert'].quantile(0.75):.0f} days")
-            with col4:
-                st.metric("Total Converted", f"{len(dist_df):,}")
-
-    # ── Tab 4: Retention Matrix ─────────────────────────────
+    # ── Tab 4: Retention Matrix by Country ─────────────────────
     with tab4:
-        st.markdown("#### Retention Matrix")
-        st.caption("What % of each cohort is still active N periods later?")
+        st.markdown("#### Country Retention Matrix")
+        st.caption("Rows = countries, Columns = month offset from signup, Values = retention %")
 
         ret_metric = st.selectbox(
             "Retention metric",
             options=["active", "paid"],
             format_func=lambda x: {"active": "Any Activity", "paid": "Made Payment"}[x],
-            key="retention_metric",
+            key="country_retention_metric",
         )
-
-        retention_df = engine.cohort_retention(
-            granularity=granularity,
-            metric=ret_metric,
-            max_periods=12,
-            min_cohort_size=min_size,
+        retention_event_source = (
+            "SELECT user_id, DATE(event_ts) AS event_date FROM core.fact_user_activity"
+            if ret_metric == "active"
+            else "SELECT user_id, DATE(payment_ts) AS event_date FROM core.fact_payment_topup"
         )
-
+        retention_query = f"""
+        WITH cohorts AS (
+            SELECT
+                user_id,
+                COALESCE(NULLIF(registration_country_name, ''), 'Unknown') AS country,
+                DATE(registration_ts) AS signup_date
+            FROM core.dim_user
+            WHERE registration_ts IS NOT NULL
+        ),
+        events AS (
+            {retention_event_source}
+        ),
+        user_periods AS (
+            SELECT DISTINCT
+                c.user_id,
+                c.country,
+                DATEDIFF('month', c.signup_date, e.event_date) AS period_offset
+            FROM cohorts c
+            JOIN events e ON c.user_id = e.user_id
+        ),
+        cohort_sizes AS (
+            SELECT country, COUNT(*) AS cohort_size
+            FROM cohorts
+            GROUP BY country
+            HAVING COUNT(*) >= {int(min_size)}
+        ),
+        retention AS (
+            SELECT
+                up.country,
+                up.period_offset,
+                COUNT(DISTINCT up.user_id) AS user_count
+            FROM user_periods up
+            JOIN cohort_sizes cs ON up.country = cs.country
+            WHERE up.period_offset >= 0 AND up.period_offset <= 12
+            GROUP BY up.country, up.period_offset
+        )
+        SELECT
+            r.country,
+            r.period_offset,
+            r.user_count,
+            cs.cohort_size,
+            ROUND(100.0 * r.user_count / cs.cohort_size, 1) AS retention_pct
+        FROM retention r
+        JOIN cohort_sizes cs ON r.country = cs.country
+        ORDER BY r.country, r.period_offset
+        """
+        retention_df = load_app_data(duckdb_path, retention_query, suppress_error=True)
         if retention_df is None or retention_df.empty:
-            st.info("No retention data available.")
+            st.info("No retention data available for current filters.")
         else:
-            # Pivot to heatmap format: rows = cohorts, columns = period offsets
             pivot = retention_df.pivot_table(
-                index="cohort_start",
+                index="country",
                 columns="period_offset",
                 values="retention_pct",
                 aggfunc="first",
-            )
-
-            # Format index for readability
-            pivot.index = pd.to_datetime(pivot.index).strftime("%Y-%m-%d")
-            period_label = "Week" if granularity == "week" else "Month"
-            pivot.columns = [f"{period_label} {int(c)}" for c in pivot.columns]
-
-            # Display as a heatmap using plotly
+            ).fillna(0)
+            pivot.columns = [f"Month {int(col)}" for col in pivot.columns]
             fig = px.imshow(
                 pivot.values,
                 x=pivot.columns.tolist(),
                 y=pivot.index.tolist(),
                 color_continuous_scale="RdYlGn",
-                zmin=0, zmax=100,
-                labels={"color": "Retention %", "x": f"{period_label} After Signup", "y": "Cohort"},
-                title=f"{'Activity' if ret_metric == 'active' else 'Payment'} Retention by Cohort",
+                zmin=0,
+                zmax=100,
+                labels={"color": "Retention %", "x": "Month After Signup", "y": "Country"},
                 text_auto=".0f",
+                title=f"{'Activity' if ret_metric == 'active' else 'Payment'} Retention by Country",
             )
-            fig.update_layout(
-                height=max(300, len(pivot) * 35),
-                margin=dict(t=40, b=30),
-            )
+            fig.update_layout(height=max(320, len(pivot) * 30), margin=dict(t=50, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
 
@@ -2357,6 +2645,12 @@ def render_app_analytics(duckdb_path: str):
     if table_status.get('core.dim_user', False) and table_status.get('core.user_account_state', False):
         with st.container():
             render_user_demographics(duckdb_path, start_date, end_date)
+        st.divider()
+    
+    # Component 5b: User Location Pie Chart
+    if table_status.get('core.dim_user', False):
+        with st.container():
+            render_user_location(duckdb_path, start_date, end_date)
         st.divider()
     
     # Component 6: Top Users

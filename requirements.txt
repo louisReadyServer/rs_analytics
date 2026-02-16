@@ -41,6 +41,9 @@ streamlit>=1.30.0
 # Visualization / Charts
 plotly>=5.18.0
 
+# Professional PDF report generation
+reportlab>=4.2.0
+
 # Machine Learning / Advanced Analytics
 scikit-learn>=1.3.0
 
