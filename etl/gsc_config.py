@@ -15,11 +15,13 @@ Usage:
 
 import logging
 import os
+import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from etl.config import ConfigurationError
+from etl.config import ConfigurationError, get_secret, is_streamlit_cloud
 from etl.utils import load_env_file, resolve_path, ensure_directory_exists
 
 
@@ -73,8 +75,9 @@ def get_gsc_config(force_reload: bool = False) -> GSCConfig:
     if _gsc_config_instance is not None and not force_reload:
         return _gsc_config_instance
     
-    # Load .env file
-    load_env_file()
+    # Load .env file (skip on Streamlit Cloud)
+    if not is_streamlit_cloud():
+        load_env_file()
     
     logger = logging.getLogger("gsc_config")
     
@@ -82,12 +85,12 @@ def get_gsc_config(force_reload: bool = False) -> GSCConfig:
     # Validate GSC Site URL
     # ============================================
     
-    gsc_site_url = os.getenv("GSC_SITE_URL")
+    gsc_site_url = get_secret("GSC_SITE_URL")
     if not gsc_site_url:
         raise ConfigurationError(
             message="Missing GSC_SITE_URL environment variable.",
             fix=(
-                "1. Set your Search Console property URL in .env:\n"
+                "1. Set your Search Console property URL in .env or Streamlit secrets:\n"
                 "   GSC_SITE_URL=https://www.yoursite.com\n"
                 "   or for domain properties:\n"
                 "   GSC_SITE_URL=sc-domain:yoursite.com\n"
@@ -102,44 +105,72 @@ def get_gsc_config(force_reload: bool = False) -> GSCConfig:
     # Validate GSC Credentials Path
     # ============================================
     
-    gsc_credentials_str = os.getenv("GOOGLE_SEARCH_CONSOLE_CREDENTIALS")
-    if not gsc_credentials_str:
-        raise ConfigurationError(
-            message="Missing GOOGLE_SEARCH_CONSOLE_CREDENTIALS environment variable.",
-            fix=(
-                "1. Create a service account in Google Cloud Console\n"
-                "2. Download the JSON key file\n"
-                "3. Save it to: secrets/gsc_service_account.json\n"
-                "4. Set the path in .env:\n"
-                "   GOOGLE_SEARCH_CONSOLE_CREDENTIALS=/full/path/to/secrets/gsc_service_account.json\n"
-                "5. Add the service account email to Search Console as a user"
-            )
-        )
+    gsc_credentials_path = None
     
-    gsc_credentials_path = resolve_path(gsc_credentials_str, gsc_credentials_str)
-    
-    if not gsc_credentials_path.exists():
-        raise ConfigurationError(
-            message=f"GSC credentials file not found: {gsc_credentials_path}",
-            fix=(
-                "1. Verify the file exists at the specified path\n"
-                "2. Check GOOGLE_SEARCH_CONSOLE_CREDENTIALS in .env\n"
-                f"3. Expected location: {gsc_credentials_path}"
+    if is_streamlit_cloud():
+        try:
+            import streamlit as st
+            # Check if GSC_SERVICE_ACCOUNT section exists in secrets
+            if "GSC_SERVICE_ACCOUNT" in st.secrets:
+                # Create temporary JSON file from secrets
+                gsc_creds = dict(st.secrets["GSC_SERVICE_ACCOUNT"])
+                temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+                json.dump(gsc_creds, temp_file)
+                temp_file.close()
+                gsc_credentials_path = Path(temp_file.name)
+                logger.info(f"Created temporary GSC credentials file from st.secrets")
+            else:
+                raise ConfigurationError(
+                    message="GSC_SERVICE_ACCOUNT not found in Streamlit secrets.",
+                    fix="Add a [GSC_SERVICE_ACCOUNT] section to your Streamlit secrets"
+                )
+        except Exception as e:
+            if not isinstance(e, ConfigurationError):
+                raise ConfigurationError(
+                    message=f"Failed to load GSC credentials from Streamlit secrets: {e}",
+                    fix="Check that your Streamlit secrets are properly formatted in TOML"
+                )
+            raise
+    else:
+        # Local development: use file path
+        gsc_credentials_str = os.getenv("GOOGLE_SEARCH_CONSOLE_CREDENTIALS")
+        if not gsc_credentials_str:
+            raise ConfigurationError(
+                message="Missing GOOGLE_SEARCH_CONSOLE_CREDENTIALS environment variable.",
+                fix=(
+                    "1. Create a service account in Google Cloud Console\n"
+                    "2. Download the JSON key file\n"
+                    "3. Save it to: secrets/gsc_service_account.json\n"
+                    "4. Set the path in .env:\n"
+                    "   GOOGLE_SEARCH_CONSOLE_CREDENTIALS=/full/path/to/secrets/gsc_service_account.json\n"
+                    "5. Add the service account email to Search Console as a user"
+                )
             )
-        )
+        
+        gsc_credentials_path = resolve_path(gsc_credentials_str, gsc_credentials_str)
+        
+        if not gsc_credentials_path.exists():
+            raise ConfigurationError(
+                message=f"GSC credentials file not found: {gsc_credentials_path}",
+                fix=(
+                    "1. Verify the file exists at the specified path\n"
+                    "2. Check GOOGLE_SEARCH_CONSOLE_CREDENTIALS in .env\n"
+                    f"3. Expected location: {gsc_credentials_path}"
+                )
+            )
     
     # ============================================
     # Get Shared Settings from Main Config
     # ============================================
     
     # DuckDB path
-    duckdb_path = resolve_path(os.getenv("DUCKDB_PATH", None), "data/warehouse.duckdb")
+    duckdb_path = resolve_path(get_secret("DUCKDB_PATH", None), "data/warehouse.duckdb")
     
     # Log directory
-    log_dir = ensure_directory_exists(resolve_path(os.getenv("LOG_DIR", None), "logs"))
+    log_dir = ensure_directory_exists(resolve_path(get_secret("LOG_DIR", None), "logs"))
     
     # Log level
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = str(get_secret("LOG_LEVEL", "INFO")).upper()
     
     # ============================================
     # Create Config Instance

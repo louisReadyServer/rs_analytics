@@ -21,11 +21,51 @@ and how to fix it.
 import logging
 import os
 import sys
+import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 from etl.utils import load_env_file, resolve_path, ensure_directory_exists, get_project_root
+
+# ============================================
+# Streamlit Secrets Helper
+# ============================================
+
+def get_secret(key: str, default: Any = None) -> Any:
+    """
+    Get a secret from Streamlit secrets or environment variables.
+    
+    Priority:
+    1. Streamlit secrets (st.secrets)
+    2. Environment variables (os.getenv)
+    3. Default value
+    
+    Args:
+        key: Secret key to retrieve
+        default: Default value if not found
+        
+    Returns:
+        Secret value or default
+    """
+    try:
+        import streamlit as st
+        if hasattr(st, 'secrets') and key in st.secrets:
+            return st.secrets[key]
+    except (ImportError, FileNotFoundError, KeyError):
+        pass
+    
+    return os.getenv(key, default)
+
+
+def is_streamlit_cloud() -> bool:
+    """Check if running on Streamlit Cloud."""
+    try:
+        import streamlit as st
+        return hasattr(st, 'secrets')
+    except ImportError:
+        return False
 
 # ============================================
 # Custom Exception
@@ -134,8 +174,11 @@ def get_config(force_reload: bool = False) -> Config:
     if _config_instance is not None and not force_reload:
         return _config_instance
     
-    # Load .env file from project root
-    env_loaded = load_env_file()
+    # Load .env file from project root (skip on Streamlit Cloud)
+    if not is_streamlit_cloud():
+        env_loaded = load_env_file()
+    else:
+        env_loaded = False
     
     # Setup basic logging for config loading messages
     logging.basicConfig(
@@ -144,7 +187,9 @@ def get_config(force_reload: bool = False) -> Config:
     )
     logger = logging.getLogger("config")
     
-    if env_loaded:
+    if is_streamlit_cloud():
+        logger.info("Running on Streamlit Cloud, using st.secrets")
+    elif env_loaded:
         logger.info("Loaded environment configuration from .env file")
     else:
         logger.info("No .env file found, using system environment variables")
@@ -154,74 +199,110 @@ def get_config(force_reload: bool = False) -> Config:
     # ============================================
     
     # Validate GA4 Property ID
-    ga4_property_id = os.getenv("GA4_PROPERTY_ID")
+    ga4_property_id = get_secret("GA4_PROPERTY_ID")
     if not ga4_property_id or ga4_property_id == "YOUR_GA4_PROPERTY_ID":
         raise ConfigurationError(
             message="Missing or invalid GA4_PROPERTY_ID environment variable.",
             fix=(
                 "1. Find your GA4 Property ID in Google Analytics:\n"
                 "   GA4 → Admin → Property Settings → Property ID\n"
-                "2. Set it in your .env file:\n"
+                "2. Set it in your .env file or Streamlit secrets:\n"
                 "   GA4_PROPERTY_ID=123456789\n"
                 "3. The Property ID is a numeric string (e.g., '123456789')"
             )
         )
     
     # Validate Google Application Credentials
-    google_credentials_path_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if not google_credentials_path_str:
-        raise ConfigurationError(
-            message="Missing GOOGLE_APPLICATION_CREDENTIALS environment variable.",
-            fix=(
-                "1. Create a service account in Google Cloud Console:\n"
-                "   - Go to IAM & Admin → Service Accounts\n"
-                "   - Create a new service account\n"
-                "   - Download the JSON key file\n"
-                "2. Save the JSON file to: secrets/ga4_service_account.json\n"
-                "3. Set the ABSOLUTE path in your .env file:\n"
-                "   GOOGLE_APPLICATION_CREDENTIALS=/full/path/to/secrets/ga4_service_account.json\n"
-                "4. Add the service account email to GA4 Property Access Management\n"
-                "   with at least 'Viewer' role"
+    # On Streamlit Cloud, check for embedded JSON in secrets
+    google_credentials_path = None
+    
+    if is_streamlit_cloud():
+        try:
+            import streamlit as st
+            # Check if GA4_SERVICE_ACCOUNT section exists in secrets
+            if "GA4_SERVICE_ACCOUNT" in st.secrets:
+                # Create temporary JSON file from secrets
+                ga4_creds = dict(st.secrets["GA4_SERVICE_ACCOUNT"])
+                temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+                json.dump(ga4_creds, temp_file)
+                temp_file.close()
+                google_credentials_path = Path(temp_file.name)
+                logger.info(f"Created temporary credentials file from st.secrets: {google_credentials_path}")
+            else:
+                raise ConfigurationError(
+                    message="GA4_SERVICE_ACCOUNT not found in Streamlit secrets.",
+                    fix=(
+                        "Add a [GA4_SERVICE_ACCOUNT] section to your Streamlit secrets with:\n"
+                        "type, project_id, private_key_id, private_key, client_email, etc."
+                    )
+                )
+        except Exception as e:
+            if not isinstance(e, ConfigurationError):
+                raise ConfigurationError(
+                    message=f"Failed to load GA4 credentials from Streamlit secrets: {e}",
+                    fix="Check that your Streamlit secrets are properly formatted in TOML"
+                )
+            raise
+    else:
+        # Local development: use file path
+        google_credentials_path_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if not google_credentials_path_str:
+            raise ConfigurationError(
+                message="Missing GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+                fix=(
+                    "1. Create a service account in Google Cloud Console:\n"
+                    "   - Go to IAM & Admin → Service Accounts\n"
+                    "   - Create a new service account\n"
+                    "   - Download the JSON key file\n"
+                    "2. Save the JSON file to: secrets/ga4_service_account.json\n"
+                    "3. Set the ABSOLUTE path in your .env file:\n"
+                    "   GOOGLE_APPLICATION_CREDENTIALS=/full/path/to/secrets/ga4_service_account.json\n"
+                    "4. Add the service account email to GA4 Property Access Management\n"
+                    "   with at least 'Viewer' role"
+                )
             )
-        )
-    
-    google_credentials_path = Path(google_credentials_path_str)
-    
-    # Check if path is absolute (warn if relative)
-    if not google_credentials_path.is_absolute():
-        logger.warning(
-            "GOOGLE_APPLICATION_CREDENTIALS is a relative path. "
-            "For production use, please use an absolute path."
-        )
-        # Convert to absolute based on project root
-        google_credentials_path = (get_project_root() / google_credentials_path).resolve()
-    
-    if not google_credentials_path.exists():
-        raise ConfigurationError(
-            message=f"Service account file not found: {google_credentials_path}",
-            fix=(
-                "1. Verify the file exists at the specified path\n"
-                "2. Check that GOOGLE_APPLICATION_CREDENTIALS contains the correct path\n"
-                "3. Ensure the file has correct permissions (chmod 600 on Linux/Mac)\n"
-                f"4. Expected location: {google_credentials_path}"
+        
+        google_credentials_path = Path(google_credentials_path_str)
+        
+        # Check if path is absolute (warn if relative)
+        if not google_credentials_path.is_absolute():
+            logger.warning(
+                "GOOGLE_APPLICATION_CREDENTIALS is a relative path. "
+                "For production use, please use an absolute path."
             )
-        )
-    
-    if not google_credentials_path.is_file():
-        raise ConfigurationError(
-            message=f"GOOGLE_APPLICATION_CREDENTIALS points to a directory, not a file: {google_credentials_path}",
-            fix=(
-                "GOOGLE_APPLICATION_CREDENTIALS must point to the service account JSON file,\n"
-                "not a directory. Example:\n"
-                "   GOOGLE_APPLICATION_CREDENTIALS=/path/to/secrets/ga4_service_account.json"
+            # Convert to absolute based on project root
+            google_credentials_path = (get_project_root() / google_credentials_path).resolve()
+        
+        if not google_credentials_path.exists():
+            raise ConfigurationError(
+                message=f"Service account file not found: {google_credentials_path}",
+                fix=(
+                    "1. Verify the file exists at the specified path\n"
+                    "2. Check that GOOGLE_APPLICATION_CREDENTIALS contains the correct path\n"
+                    "3. Ensure the file has correct permissions (chmod 600 on Linux/Mac)\n"
+                    f"4. Expected location: {google_credentials_path}"
+                )
             )
-        )
+        
+        if not google_credentials_path.is_file():
+            raise ConfigurationError(
+                message=f"GOOGLE_APPLICATION_CREDENTIALS points to a directory, not a file: {google_credentials_path}",
+                fix=(
+                    "GOOGLE_APPLICATION_CREDENTIALS must point to the service account JSON file,\n"
+                    "not a directory. Example:\n"
+                    "   GOOGLE_APPLICATION_CREDENTIALS=/path/to/secrets/ga4_service_account.json"
+                )
+            )
+    
+    # Set environment variable for Google libraries to use
+    if google_credentials_path:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(google_credentials_path)
     
     # ============================================
     # Validate DuckDB Path
     # ============================================
     
-    duckdb_path = resolve_path(os.getenv("DUCKDB_PATH", None), "data/warehouse.duckdb")
+    duckdb_path = resolve_path(get_secret("DUCKDB_PATH", None), "data/warehouse.duckdb")
     
     # Ensure parent directory exists or can be created
     duckdb_parent = duckdb_path.parent
@@ -243,7 +324,7 @@ def get_config(force_reload: bool = False) -> Config:
     # Validate Logging Settings
     # ============================================
     
-    log_dir = resolve_path(os.getenv("LOG_DIR", None), "logs")
+    log_dir = resolve_path(get_secret("LOG_DIR", None), "logs")
     try:
         ensure_directory_exists(log_dir)
     except PermissionError:
@@ -256,7 +337,7 @@ def get_config(force_reload: bool = False) -> Config:
             )
         )
     
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = str(get_secret("LOG_LEVEL", "INFO")).upper()
     valid_log_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
     if log_level not in valid_log_levels:
         raise ConfigurationError(
@@ -268,7 +349,7 @@ def get_config(force_reload: bool = False) -> Config:
     # Validate ETL Settings
     # ============================================
     
-    lookback_days_str = os.getenv("LOOKBACK_DAYS", "7")
+    lookback_days_str = str(get_secret("LOOKBACK_DAYS", "7"))
     try:
         lookback_days = int(lookback_days_str)
         if lookback_days < 1:
@@ -283,7 +364,7 @@ def get_config(force_reload: bool = False) -> Config:
     # Validate Optional BigQuery Settings
     # ============================================
     
-    enable_bq_mirror_str = os.getenv("ENABLE_BQ_MIRROR", "0")
+    enable_bq_mirror_str = str(get_secret("ENABLE_BQ_MIRROR", "0"))
     enable_bq_mirror = enable_bq_mirror_str.lower() in ("1", "true", "yes")
     
     bq_project_id: Optional[str] = None
@@ -292,7 +373,7 @@ def get_config(force_reload: bool = False) -> Config:
     
     if enable_bq_mirror:
         # Validate BQ Project ID
-        bq_project_id = os.getenv("BQ_PROJECT_ID")
+        bq_project_id = get_secret("BQ_PROJECT_ID")
         if not bq_project_id:
             raise ConfigurationError(
                 message="ENABLE_BQ_MIRROR=1 but BQ_PROJECT_ID is not set.",
@@ -304,7 +385,7 @@ def get_config(force_reload: bool = False) -> Config:
             )
         
         # Validate BQ Dataset
-        bq_dataset = os.getenv("BQ_DATASET")
+        bq_dataset = get_secret("BQ_DATASET")
         if not bq_dataset:
             raise ConfigurationError(
                 message="ENABLE_BQ_MIRROR=1 but BQ_DATASET is not set.",
@@ -316,7 +397,7 @@ def get_config(force_reload: bool = False) -> Config:
             )
         
         # Validate BQ Credentials
-        bq_credentials_str = os.getenv("BQ_CREDENTIALS_JSON")
+        bq_credentials_str = get_secret("BQ_CREDENTIALS_JSON")
         if not bq_credentials_str:
             raise ConfigurationError(
                 message="ENABLE_BQ_MIRROR=1 but BQ_CREDENTIALS_JSON is not set.",

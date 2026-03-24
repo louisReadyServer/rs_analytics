@@ -77,11 +77,11 @@ def get_appsflyer_config() -> AppsFlyerConfig:
         AppsFlyerConfigurationError: If required configuration is missing
     """
     # ── API Token ──
-    api_token = os.getenv("APPSFLYER_API_TOKEN")
+    api_token = get_secret("APPSFLYER_API_TOKEN")
     if not api_token:
         raise AppsFlyerConfigurationError(
             "APPSFLYER_API_TOKEN not found in environment.\n"
-            "Set it in your .env file:\n"
+            "Set it in your .env file or Streamlit secrets:\n"
             "  APPSFLYER_API_TOKEN=your_v2_bearer_token\n"
             "Get your V2 token from: AppsFlyer Dashboard > Security Center"
         )
@@ -95,24 +95,24 @@ def get_appsflyer_config() -> AppsFlyerConfig:
     # ── App IDs ──
     apps: List[Dict[str, str]] = []
 
-    ios_app_id = os.getenv("APPSFLYER_IOS_APP_ID")
+    ios_app_id = get_secret("APPSFLYER_IOS_APP_ID")
     if ios_app_id:
         apps.append({"id": ios_app_id, "platform": "ios"})
 
-    android_app_id = os.getenv("APPSFLYER_ANDROID_APP_ID")
+    android_app_id = get_secret("APPSFLYER_ANDROID_APP_ID")
     if android_app_id:
         apps.append({"id": android_app_id, "platform": "android"})
 
     if not apps:
         raise AppsFlyerConfigurationError(
             "No AppsFlyer app IDs found in environment.\n"
-            "Set at least one in your .env file:\n"
+            "Set at least one in your .env file or Streamlit secrets:\n"
             "  APPSFLYER_IOS_APP_ID=id6739326850\n"
             "  APPSFLYER_ANDROID_APP_ID=com.example.app"
         )
 
     # ── DuckDB Path ──
-    duckdb_path = resolve_path(os.getenv("DUCKDB_PATH", None), "data/warehouse.duckdb")
+    duckdb_path = resolve_path(get_secret("DUCKDB_PATH", None), "data/warehouse.duckdb")
     duckdb_path.parent.mkdir(parents=True, exist_ok=True)
 
     return AppsFlyerConfig(

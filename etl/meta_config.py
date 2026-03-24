@@ -18,9 +18,11 @@ from dataclasses import dataclass
 from typing import Optional, List
 
 from etl.utils import load_env_file, resolve_path
+from etl.config import get_secret, is_streamlit_cloud
 
-# Load environment variables
-load_env_file()
+# Load environment variables (skip on Streamlit Cloud)
+if not is_streamlit_cloud():
+    load_env_file()
 
 
 class MetaConfigurationError(Exception):
@@ -68,23 +70,33 @@ def get_meta_config() -> MetaConfig:
         MetaConfigurationError: If required configuration is missing or invalid
     """
     # Get access token
-    access_token = os.getenv("META_ACCESS_TOKEN")
+    access_token = get_secret("META_ACCESS_TOKEN")
     if not access_token:
         raise MetaConfigurationError(
             "META_ACCESS_TOKEN not found in environment.\n"
-            "Please set it in your .env file:\n"
+            "Please set it in your .env file or Streamlit secrets:\n"
             "META_ACCESS_TOKEN=your_access_token_here"
         )
     
     if len(access_token) < 50 or access_token.startswith("your_"):
         raise MetaConfigurationError(
             "META_ACCESS_TOKEN appears to be invalid or a placeholder.\n"
-            "Please set a valid access token in your .env file."
+            "Please set a valid access token in your .env file or Streamlit secrets."
         )
     
     # Get ad account IDs
-    primary_account = os.getenv("META_AD_ACCOUNT_ID", "")
-    additional_accounts = os.getenv("META_ADDITIONAL_AD_ACCOUNTS", "")
+    primary_account = get_secret("META_AD_ACCOUNT_ID", "")
+    additional_accounts = get_secret("META_ADDITIONAL_AD_ACCOUNTS", "")
+    
+    # Also check for META_AD_ACCOUNT_IDS (comma-separated list)
+    if not primary_account and not additional_accounts:
+        account_ids_str = get_secret("META_AD_ACCOUNT_IDS", "")
+        if account_ids_str:
+            accounts_list = [a.strip() for a in account_ids_str.split(",") if a.strip()]
+            if accounts_list:
+                primary_account = accounts_list[0]
+                if len(accounts_list) > 1:
+                    additional_accounts = ",".join(accounts_list[1:])
     
     ad_account_ids = []
     if primary_account:
@@ -110,7 +122,7 @@ def get_meta_config() -> MetaConfig:
         )
     
     # Get DuckDB path
-    duckdb_path = resolve_path(os.getenv("DUCKDB_PATH", None), "data/warehouse.duckdb")
+    duckdb_path = resolve_path(get_secret("DUCKDB_PATH", None), "data/warehouse.duckdb")
     duckdb_path.parent.mkdir(parents=True, exist_ok=True)
     
     return MetaConfig(

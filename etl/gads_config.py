@@ -15,13 +15,14 @@ Usage:
 
 import logging
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import yaml
 
-from etl.config import ConfigurationError
+from etl.config import ConfigurationError, get_secret, is_streamlit_cloud
 from etl.utils import load_env_file, resolve_path, ensure_directory_exists
 
 
@@ -78,51 +79,82 @@ def get_gads_config(force_reload: bool = False) -> GAdsConfig:
     if _gads_config_instance is not None and not force_reload:
         return _gads_config_instance
     
-    # Load .env file
-    load_env_file()
+    # Load .env file (skip on Streamlit Cloud)
+    if not is_streamlit_cloud():
+        load_env_file()
     
     logger = logging.getLogger("gads_config")
     
     # ============================================
-    # Validate YAML Path
+    # Validate YAML Path or Secrets
     # ============================================
     
-    yaml_path_str = os.getenv("GOOGLE_ADS_YAML_PATH")
-    if not yaml_path_str:
-        raise ConfigurationError(
-            message="Missing GOOGLE_ADS_YAML_PATH environment variable.",
-            fix=(
-                "1. Create secrets/google_ads.yaml with your credentials\n"
-                "2. Set the path in .env:\n"
-                "   GOOGLE_ADS_YAML_PATH=/full/path/to/secrets/google_ads.yaml"
+    yaml_path = None
+    yaml_data = None
+    
+    if is_streamlit_cloud():
+        try:
+            import streamlit as st
+            # Check if GOOGLE_ADS section exists in secrets
+            if "GOOGLE_ADS" in st.secrets:
+                yaml_data = dict(st.secrets["GOOGLE_ADS"])
+                # Create temporary YAML file for compatibility with GoogleAdsClient
+                temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+                yaml.dump(yaml_data, temp_file)
+                temp_file.close()
+                yaml_path = Path(temp_file.name)
+                logger.info(f"Created temporary Google Ads YAML from st.secrets")
+            else:
+                raise ConfigurationError(
+                    message="GOOGLE_ADS not found in Streamlit secrets.",
+                    fix="Add a [GOOGLE_ADS] section to your Streamlit secrets"
+                )
+        except Exception as e:
+            if not isinstance(e, ConfigurationError):
+                raise ConfigurationError(
+                    message=f"Failed to load Google Ads credentials from Streamlit secrets: {e}",
+                    fix="Check that your Streamlit secrets are properly formatted in TOML"
+                )
+            raise
+    else:
+        # Local development: use file path
+        yaml_path_str = os.getenv("GOOGLE_ADS_YAML_PATH")
+        if not yaml_path_str:
+            raise ConfigurationError(
+                message="Missing GOOGLE_ADS_YAML_PATH environment variable.",
+                fix=(
+                    "1. Create secrets/google_ads.yaml with your credentials\n"
+                    "2. Set the path in .env:\n"
+                    "   GOOGLE_ADS_YAML_PATH=/full/path/to/secrets/google_ads.yaml"
+                )
             )
-        )
-    
-    yaml_path = resolve_path(yaml_path_str, yaml_path_str)
-    
-    if not yaml_path.exists():
-        raise ConfigurationError(
-            message=f"Google Ads YAML file not found: {yaml_path}",
-            fix=(
-                "1. Create the google_ads.yaml file at the specified path\n"
-                "2. Include: developer_token, client_id, client_secret, refresh_token\n"
-                f"3. Expected location: {yaml_path}"
+        
+        yaml_path = resolve_path(yaml_path_str, yaml_path_str)
+        
+        if not yaml_path.exists():
+            raise ConfigurationError(
+                message=f"Google Ads YAML file not found: {yaml_path}",
+                fix=(
+                    "1. Create the google_ads.yaml file at the specified path\n"
+                    "2. Include: developer_token, client_id, client_secret, refresh_token\n"
+                    f"3. Expected location: {yaml_path}"
+                )
             )
-        )
+        
+        # ============================================
+        # Validate YAML Contents
+        # ============================================
+        
+        try:
+            with open(yaml_path, 'r') as f:
+                yaml_data = yaml.safe_load(f)
+        except Exception as e:
+            raise ConfigurationError(
+                message=f"Failed to parse google_ads.yaml: {e}",
+                fix="Ensure the YAML file is properly formatted"
+            )
     
-    # ============================================
-    # Validate YAML Contents
-    # ============================================
-    
-    try:
-        with open(yaml_path, 'r') as f:
-            yaml_data = yaml.safe_load(f)
-    except Exception as e:
-        raise ConfigurationError(
-            message=f"Failed to parse google_ads.yaml: {e}",
-            fix="Ensure the YAML file is properly formatted"
-        )
-    
+    # Validate YAML data (whether from file or secrets)
     required_fields = ['developer_token', 'client_id', 'client_secret', 'refresh_token']
     missing_fields = [f for f in required_fields if not yaml_data.get(f) or yaml_data.get(f) == f'YOUR_{f.upper()}']
     
@@ -130,7 +162,7 @@ def get_gads_config(force_reload: bool = False) -> GAdsConfig:
         raise ConfigurationError(
             message=f"Google Ads YAML missing required fields: {missing_fields}",
             fix=(
-                "Fill in all required fields in google_ads.yaml:\n"
+                "Fill in all required fields in google_ads.yaml or Streamlit secrets:\n"
                 "  developer_token: Your API developer token\n"
                 "  client_id: OAuth client ID\n"
                 "  client_secret: OAuth client secret\n"
@@ -145,7 +177,7 @@ def get_gads_config(force_reload: bool = False) -> GAdsConfig:
     # Validate Customer ID
     # ============================================
     
-    customer_id = os.getenv("GOOGLE_ADS_CUSTOMER_ID")
+    customer_id = get_secret("GOOGLE_ADS_CUSTOMER_ID")
     if not customer_id:
         # Try to get from login_customer_id in YAML
         customer_id = str(login_customer_id) if login_customer_id else None
@@ -168,13 +200,13 @@ def get_gads_config(force_reload: bool = False) -> GAdsConfig:
     # ============================================
     
     # DuckDB path
-    duckdb_path = resolve_path(os.getenv("DUCKDB_PATH", None), "data/warehouse.duckdb")
+    duckdb_path = resolve_path(get_secret("DUCKDB_PATH", None), "data/warehouse.duckdb")
     
     # Log directory
-    log_dir = ensure_directory_exists(resolve_path(os.getenv("LOG_DIR", None), "logs"))
+    log_dir = ensure_directory_exists(resolve_path(get_secret("LOG_DIR", None), "logs"))
     
     # Log level
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = str(get_secret("LOG_LEVEL", "INFO")).upper()
     
     # ============================================
     # Create Config Instance
