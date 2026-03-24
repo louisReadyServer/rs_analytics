@@ -244,6 +244,11 @@ def get_gads_client():
     # Load client from YAML file
     client = GoogleAdsClient.load_from_storage(str(config.yaml_path))
     
+    # Explicitly set login_customer_id for manager account access
+    # This is required when accessing client accounts through a manager account
+    if config.login_customer_id:
+        client.login_customer_id = config.login_customer_id
+    
     return client
 
 
