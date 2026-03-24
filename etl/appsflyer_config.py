@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from etl.utils import load_env_file, resolve_path
+from etl.secrets_helper import get_secret, is_streamlit_cloud
 
-# Load environment variables from .env at project root
-load_env_file()
+# Load environment variables from .env at project root (skip on Streamlit Cloud)
+if not is_streamlit_cloud():
+    load_env_file()
 
 
 class AppsFlyerConfigurationError(Exception):

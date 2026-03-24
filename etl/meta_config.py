@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional, List
 
 from etl.utils import load_env_file, resolve_path
-from etl.config import get_secret, is_streamlit_cloud
+from etl.secrets_helper import get_secret, is_streamlit_cloud
 
 # Load environment variables (skip on Streamlit Cloud)
 if not is_streamlit_cloud():

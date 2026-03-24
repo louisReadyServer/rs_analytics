@@ -22,7 +22,8 @@ from typing import Optional
 
 import yaml
 
-from etl.config import ConfigurationError, get_secret, is_streamlit_cloud
+from etl.config import ConfigurationError
+from etl.secrets_helper import get_secret, is_streamlit_cloud, get_secret_section
 from etl.utils import load_env_file, resolve_path, ensure_directory_exists
 
 
@@ -94,10 +95,9 @@ def get_gads_config(force_reload: bool = False) -> GAdsConfig:
     
     if is_streamlit_cloud():
         try:
-            import streamlit as st
             # Check if GOOGLE_ADS section exists in secrets
-            if "GOOGLE_ADS" in st.secrets:
-                yaml_data = dict(st.secrets["GOOGLE_ADS"])
+            yaml_data = get_secret_section("GOOGLE_ADS")
+            if yaml_data:
                 # Create temporary YAML file for compatibility with GoogleAdsClient
                 temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
                 yaml.dump(yaml_data, temp_file)

@@ -28,44 +28,7 @@ from pathlib import Path
 from typing import Optional, Any
 
 from etl.utils import load_env_file, resolve_path, ensure_directory_exists, get_project_root
-
-# ============================================
-# Streamlit Secrets Helper
-# ============================================
-
-def get_secret(key: str, default: Any = None) -> Any:
-    """
-    Get a secret from Streamlit secrets or environment variables.
-    
-    Priority:
-    1. Streamlit secrets (st.secrets)
-    2. Environment variables (os.getenv)
-    3. Default value
-    
-    Args:
-        key: Secret key to retrieve
-        default: Default value if not found
-        
-    Returns:
-        Secret value or default
-    """
-    try:
-        import streamlit as st
-        if hasattr(st, 'secrets') and key in st.secrets:
-            return st.secrets[key]
-    except (ImportError, FileNotFoundError, KeyError):
-        pass
-    
-    return os.getenv(key, default)
-
-
-def is_streamlit_cloud() -> bool:
-    """Check if running on Streamlit Cloud."""
-    try:
-        import streamlit as st
-        return hasattr(st, 'secrets')
-    except ImportError:
-        return False
+from etl.secrets_helper import get_secret, is_streamlit_cloud, get_secret_section
 
 # ============================================
 # Custom Exception
@@ -218,11 +181,10 @@ def get_config(force_reload: bool = False) -> Config:
     
     if is_streamlit_cloud():
         try:
-            import streamlit as st
             # Check if GA4_SERVICE_ACCOUNT section exists in secrets
-            if "GA4_SERVICE_ACCOUNT" in st.secrets:
+            ga4_creds = get_secret_section("GA4_SERVICE_ACCOUNT")
+            if ga4_creds:
                 # Create temporary JSON file from secrets
-                ga4_creds = dict(st.secrets["GA4_SERVICE_ACCOUNT"])
                 temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
                 json.dump(ga4_creds, temp_file)
                 temp_file.close()

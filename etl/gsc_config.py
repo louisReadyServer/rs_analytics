@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from etl.config import ConfigurationError, get_secret, is_streamlit_cloud
+from etl.config import ConfigurationError
+from etl.secrets_helper import get_secret, is_streamlit_cloud, get_secret_section
 from etl.utils import load_env_file, resolve_path, ensure_directory_exists
 
 
@@ -109,11 +110,10 @@ def get_gsc_config(force_reload: bool = False) -> GSCConfig:
     
     if is_streamlit_cloud():
         try:
-            import streamlit as st
             # Check if GSC_SERVICE_ACCOUNT section exists in secrets
-            if "GSC_SERVICE_ACCOUNT" in st.secrets:
+            gsc_creds = get_secret_section("GSC_SERVICE_ACCOUNT")
+            if gsc_creds:
                 # Create temporary JSON file from secrets
-                gsc_creds = dict(st.secrets["GSC_SERVICE_ACCOUNT"])
                 temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
                 json.dump(gsc_creds, temp_file)
                 temp_file.close()
