@@ -16,11 +16,10 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 
-from dotenv import load_dotenv
+from etl.utils import load_env_file, resolve_path
 
 # Load environment variables from project root
-project_root = Path(__file__).parent.parent
-load_dotenv(project_root / ".env")
+load_env_file()
 
 
 class TwitterConfigurationError(Exception):
@@ -103,11 +102,7 @@ def get_twitter_config() -> TwitterConfig:
     username = os.getenv("TWITTER_USERNAME", "")
     
     # Resolve DuckDB path
-    duckdb_path_str = os.getenv("DUCKDB_PATH", "./data/warehouse.duckdb")
-    if duckdb_path_str.startswith("./"):
-        duckdb_path = project_root / duckdb_path_str[2:]
-    else:
-        duckdb_path = Path(duckdb_path_str)
+    duckdb_path = resolve_path(os.getenv("DUCKDB_PATH", None), "data/warehouse.duckdb")
     
     return TwitterConfig(
         bearer_token=bearer_token,

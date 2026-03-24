@@ -23,9 +23,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
-# Add project root to path for imports
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+# Bootstrap: add project root to sys.path so etl.utils can be imported
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from etl.utils import get_project_root
+project_root = get_project_root()
 
 
 def create_etl_parser(

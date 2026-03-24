@@ -24,29 +24,13 @@ import logging
 import streamlit as st
 import pandas as pd
 import numpy as np
-import duckdb
 import plotly.express as px
 import plotly.graph_objects as go
 
 from app.components.glossary import TERM_TOOLTIPS
+from app.components.utils import query_duckdb as _query
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================
-# Data Loading
-# ============================================
-
-def _query(duckdb_path: str, sql: str) -> Optional[pd.DataFrame]:
-    """Execute a read-only DuckDB query and return a DataFrame."""
-    try:
-        conn = duckdb.connect(duckdb_path, read_only=True)
-        df = conn.execute(sql).fetchdf()
-        conn.close()
-        return df if not df.empty else None
-    except Exception as e:
-        logger.warning(f"Query failed: {e}")
-        return None
 
 
 def _load_traffic_features(duckdb_path: str) -> Optional[pd.DataFrame]:
@@ -511,14 +495,16 @@ def render_behavioral_analysis(duckdb_path: str):
         auto_k = st.checkbox("Auto-detect clusters", value=True, key="ba_auto_k")
         if auto_k:
             n_clusters = _find_optimal_k(features)
-            st.metric("Optimal K", n_clusters)
+            st.metric("Optimal K", n_clusters,
+                     help="Optimal number of segments determined by Elbow method")
         else:
             n_clusters = st.slider(
                 "Number of Segments",
                 min_value=2,
                 max_value=min(8, len(features) - 1),
                 value=4,
-                key="ba_n_clusters"
+                key="ba_n_clusters",
+                help="Number of user behavior segments to create based on session patterns"
             )
 
     # Run clustering

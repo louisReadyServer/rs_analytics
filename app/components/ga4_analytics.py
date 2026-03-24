@@ -28,6 +28,10 @@ import pandas as pd
 import duckdb
 
 from app.components.glossary import TERM_TOOLTIPS
+from rs_analytics.utils.formatting import (
+    safe_divide,
+    calculate_delta as calculate_percentage_change,
+)
 
 
 # ============================================
@@ -136,47 +140,6 @@ def get_available_ga4_tables(duckdb_path: str) -> Dict[str, bool]:
     return tables
 
 
-def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
-    """
-    Safely divide two numbers, handling zero division.
-    
-    Args:
-        numerator: Top number
-        denominator: Bottom number
-        default: Value to return if division fails (default: 0.0)
-    
-    Returns:
-        Result of division, or default value if denominator is zero
-    
-    Why this matters:
-        Prevents divide-by-zero errors in metric calculations,
-        especially important for rates and ratios.
-    """
-    if denominator is None or denominator == 0:
-        return default
-    if numerator is None:
-        return default
-    return numerator / denominator
-
-
-def calculate_percentage_change(current: float, previous: float) -> Optional[float]:
-    """
-    Calculate percentage change between two periods.
-    
-    Args:
-        current: Current period value
-        previous: Previous period value
-    
-    Returns:
-        Percentage change (e.g., 15.5 for 15.5% increase), or None if cannot calculate
-    
-    Why this matters:
-        Week-over-week and period comparisons are critical for identifying
-        trends and anomalies early.
-    """
-    if previous is None or previous == 0 or current is None:
-        return None
-    return ((current - previous) / abs(previous)) * 100
 
 
 # ============================================

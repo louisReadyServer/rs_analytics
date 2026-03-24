@@ -769,17 +769,6 @@ def render_mobile_funnel(duckdb_path: str, start_str: str, end_str: str) -> None
 # Render Functions
 # ============================================
 
-def render_header(days_options: List[int] = [7, 14, 30, 90]) -> Tuple[int, str]:
-    """
-    Render Row 0 - Header with date selector and data freshness.
-    
-    Returns:
-        (selected_days, comparison_type)
-    """
-    # This function is now deprecated - logic moved to main render function
-    # Keeping for backwards compatibility
-    return 30, "Previous Period"
-
 
 def render_data_freshness(duckdb_path: str):
     """Render data freshness indicators as status badges."""

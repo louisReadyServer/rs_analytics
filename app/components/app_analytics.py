@@ -30,8 +30,13 @@ import duckdb
 import logging
 import plotly.express as px
 
+from rs_analytics.utils.formatting import (
+    safe_divide,
+    calculate_delta as calculate_percentage_change,
+)
+from app.components.date_picker import format_date_range_label
+from app.components.glossary import TERM_TOOLTIPS
 
-# Set up logging
 logger = logging.getLogger(__name__)
 
 
@@ -646,22 +651,6 @@ def check_mart_tables_exist(duckdb_path: str) -> Dict[str, bool]:
     return tables
 
 
-def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
-    """Safely divide two numbers, handling zero division."""
-    if denominator is None or denominator == 0:
-        return default
-    if numerator is None:
-        return default
-    return numerator / denominator
-
-
-def calculate_percentage_change(current: float, previous: float) -> Optional[float]:
-    """Calculate percentage change between two periods."""
-    if previous is None or previous == 0 or current is None:
-        return None
-    return ((current - previous) / abs(previous)) * 100
-
-
 def format_currency(value: float, currency: str = "SGD") -> str:
     """Format a number as currency."""
     if value is None:
@@ -674,11 +663,6 @@ def format_points(value: int) -> str:
     if value is None:
         return "-"
     return f"{value:,}"
-
-
-def format_date_range_label(start_date: date, end_date: date) -> str:
-    """Format date range for display."""
-    return f"{start_date.strftime('%b %d, %Y')} - {end_date.strftime('%b %d, %Y')}"
 
 
 # ============================================
@@ -1152,7 +1136,8 @@ def render_user_activity_trends(duckdb_path: str, start_date: date, end_date: da
             st.metric("Avg Daily Active", f"{activity_df['active_users'].mean():,.0f}",
                      help=get_metric_tooltip("active_users"))
         with col3:
-            st.metric("Peak Active Users", f"{int(activity_df['active_users'].max()):,}")
+            st.metric("Peak Active Users", f"{int(activity_df['active_users'].max()):,}",
+                     help=get_metric_tooltip("Peak Active Users"))
     
     with tab2:
         import plotly.graph_objects as go
@@ -1417,8 +1402,10 @@ def render_points_economy(duckdb_path: str, start_date: date, end_date: date):
         
         with col2:
             st.markdown("### Source Breakdown")
-            st.metric("💳 Paid Top-ups", format_points(total_paid))
-            st.metric("🎁 Free/Promos", format_points(total_free))
+            st.metric("💳 Paid Top-ups", format_points(total_paid),
+                     help=get_metric_tooltip("points_earned_paid"))
+            st.metric("🎁 Free/Promos", format_points(total_free),
+                     help=get_metric_tooltip("points_earned_free"))
             
             st.markdown("---")
             st.markdown("**Legend:**")
@@ -2050,7 +2037,8 @@ def render_top_users(duckdb_path: str, start_date: date, end_date: date):
             with col3:
                 vps_users = int(row['users_with_vps']) if pd.notna(row['users_with_vps']) else 0
                 pct = (vps_users / total * 100) if total > 0 else 0
-                st.metric("Users with VPS", f"{vps_users:,}", delta=f"{pct:.1f}%")
+                st.metric("Users with VPS", f"{vps_users:,}", delta=f"{pct:.1f}%",
+                         help=get_metric_tooltip("Product Adoption"))
             
             with col4:
                 paying = int(row['paying_users']) if pd.notna(row['paying_users']) else 0
@@ -2252,6 +2240,7 @@ def render_cohort_analysis(duckdb_path: str):
         stage_for_curve = st.selectbox(
             "Curve stage",
             options=["verify", "vps", "paid"],
+            help="Select which conversion stage to analyze in the time-to-convert curve",
             format_func=lambda x: {"verify": "Mobile Verified", "vps": "First VPS", "paid": "First Paid"}[x],
             key="country_cohort_stage",
         )
@@ -2350,7 +2339,8 @@ def render_cohort_analysis(duckdb_path: str):
 
     # ── Tab 2: Conversion Benchmarks ──────────────────────────
     with tab2:
-        top_n = st.slider("Top countries to compare", 5, 15, 10, key="country_cohort_top_n")
+        top_n = st.slider("Top countries to compare", 5, 15, 10, key="country_cohort_top_n",
+                         help="Number of top countries by signup volume to display in comparison")
         compare_df = summary_df.sort_values("signups", ascending=False).head(top_n).copy()
         fig = px.bar(
             compare_df.melt(
@@ -2461,6 +2451,7 @@ def render_cohort_analysis(duckdb_path: str):
             options=["active", "paid"],
             format_func=lambda x: {"active": "Any Activity", "paid": "Made Payment"}[x],
             key="country_retention_metric",
+            help=TERM_TOOLTIPS.get("Retention metric", "Metric used to measure user retention")
         )
         retention_event_source = (
             "SELECT user_id, DATE(event_ts) AS event_date FROM core.fact_user_activity"

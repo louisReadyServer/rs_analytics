@@ -38,169 +38,24 @@ Created Tables:
     - gads_conversions: Conversion action data
 """
 
-import argparse
 import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Any
 
-import duckdb
-import pandas as pd
+# Bootstrap: add project root to sys.path so etl.utils can be imported
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from etl.utils import get_project_root
+project_root = get_project_root()
 
-# Add project root to path for imports
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Run Google Ads ETL pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python scripts/run_etl_gads.py                           # Last 30 days
-  python scripts/run_etl_gads.py --lifetime                # All available data
-  python scripts/run_etl_gads.py --lookback-days 90        # Last 90 days
-  python scripts/run_etl_gads.py --start-date 2024-01-01   # From specific date
-        """
-    )
-    
-    parser.add_argument(
-        "--lifetime",
-        action="store_true",
-        help="Extract all available lifetime data"
-    )
-    
-    parser.add_argument(
-        "--start-date",
-        type=str,
-        help="Start date in YYYY-MM-DD format"
-    )
-    
-    parser.add_argument(
-        "--end-date",
-        type=str,
-        help="End date in YYYY-MM-DD format (defaults to yesterday)"
-    )
-    
-    parser.add_argument(
-        "--lookback-days",
-        type=int,
-        default=30,
-        help="Number of days to look back (default: 30)"
-    )
-    
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose (DEBUG) logging"
-    )
-    
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate configuration only, don't extract data"
-    )
-    
-    return parser.parse_args()
-
-
-def setup_logging(log_dir: Path, verbose: bool = False) -> logging.Logger:
-    """Set up logging for ETL run."""
-    from logging.handlers import TimedRotatingFileHandler
-    
-    log_level = logging.DEBUG if verbose else logging.INFO
-    
-    # Create logger
-    logger = logging.getLogger("gads_etl")
-    logger.setLevel(log_level)
-    logger.handlers.clear()
-    
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
-    console_format = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    console_handler.setFormatter(console_format)
-    logger.addHandler(console_handler)
-    
-    # File handler
-    log_file = log_dir / f"gads_etl_{datetime.now().strftime('%Y%m%d')}.log"
-    file_handler = TimedRotatingFileHandler(
-        log_file,
-        when="midnight",
-        interval=1,
-        backupCount=30,
-        encoding="utf-8"
-    )
-    file_handler.setLevel(log_level)
-    file_format = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s"
-    )
-    file_handler.setFormatter(file_format)
-    logger.addHandler(file_handler)
-    
-    return logger
-
-
-def load_to_duckdb(
-    duckdb_path: str,
-    data: List[Dict[str, Any]],
-    table_name: str,
-    logger: logging.Logger
-) -> bool:
-    """
-    Load extracted data into DuckDB.
-    
-    Args:
-        duckdb_path: Path to DuckDB database
-        data: List of data rows
-        table_name: Name of the table to create/replace
-        logger: Logger instance
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    if not data:
-        logger.warning(f"No data to load for {table_name}")
-        return True
-    
-    try:
-        logger.info(f"Loading {len(data):,} rows to {table_name}")
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(data)
-        
-        # Clean column names
-        df.columns = df.columns.str.replace('[^a-zA-Z0-9_]', '_', regex=True)
-        
-        # Connect and load
-        conn = duckdb.connect(duckdb_path)
-        conn.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM df")
-        conn.close()
-        
-        logger.info(f"Successfully loaded {len(data):,} rows to {table_name}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to load {table_name}: {e}")
-        return False
+from scripts.utils.cli import create_etl_parser, get_date_range_from_args, setup_script_logging, print_completion
+from scripts.utils.db import load_to_duckdb
 
 
 def main() -> int:
     """Main ETL pipeline execution."""
-    args = parse_args()
-    
-    # Initial logging
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
+    parser = create_etl_parser("Google Ads ETL")
+    args = parser.parse_args()
     
     print("=" * 60)
     print("rs_analytics - Google Ads ETL Pipeline")
@@ -224,7 +79,7 @@ def main() -> int:
         return 1
     
     # Set up logging with config
-    logger = setup_logging(config.log_dir, args.verbose)
+    logger = setup_script_logging("gads_etl", config.log_dir, args.verbose)
     
     # ========================================
     # Step 2: Determine Date Range

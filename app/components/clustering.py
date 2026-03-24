@@ -109,16 +109,7 @@ def classify_intent_rules(query: str) -> str:
 # Data Loading
 # ============================================
 
-def _query(duckdb_path: str, sql: str) -> Optional[pd.DataFrame]:
-    """Execute a read-only DuckDB query and return a DataFrame."""
-    try:
-        conn = duckdb.connect(duckdb_path, read_only=True)
-        df = conn.execute(sql).fetchdf()
-        conn.close()
-        return df if not df.empty else None
-    except Exception as e:
-        logger.warning(f"Query failed: {e}")
-        return None
+from app.components.utils import query_duckdb as _query
 
 
 def _load_gsc_queries(duckdb_path: str) -> Optional[pd.DataFrame]:
@@ -514,7 +505,8 @@ def render_clustering(duckdb_path: str):
                     min_value=2,
                     max_value=min(8, len(gads_df) - 1),
                     value=min(4, len(gads_df) - 1),
-                    key="cl_perf_k"
+                    key="cl_perf_k",
+                    help="Number of groups to segment campaigns by performance metrics (CTR, CPA, ROAS)"
                 )
 
                 gads_clustered, kmeans_model = _cluster_by_performance(

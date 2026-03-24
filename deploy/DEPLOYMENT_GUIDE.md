@@ -4,12 +4,13 @@
 
 | Field | Value |
 |-------|-------|
-| IP Address | `103.14.79.195` |
+| IP Address | `YOUR_VPS_IP` |
 | Username | `root` |
-| Password | `4Bj8TaZq` |
-| Console URL | https://novnc101.readyservervps.com/v10008314-N6HJ0Q7E |
+| Password | Set via `VPS_PASSWORD` env var or SSH keys |
+| Console URL | (provided by your VPS host) |
 
-> ⚠️ **SECURITY WARNING**: Change your password after deployment!
+> **SECURITY**: Change the default password immediately after first login.
+> Use SSH key authentication and disable password login for production.
 
 ---
 
@@ -20,10 +21,8 @@
 Open **PowerShell** or **Command Prompt** and run:
 
 ```bash
-ssh root@103.14.79.195
+ssh root@YOUR_VPS_IP
 ```
-
-Enter password: `4Bj8TaZq`
 
 Once connected, run:
 
@@ -53,16 +52,16 @@ Open a NEW PowerShell window (don't close the SSH session) and run:
 ```powershell
 cd "c:\Users\lowai\OneDrive\Desktop\RS_Analytics\rs_analytics"
 
-scp -r app etl scripts requirements.txt .env.example deploy root@103.14.79.195:/home/rsanalytics/rs_analytics/
+scp -r app etl scripts requirements.txt .env.example deploy root@YOUR_VPS_IP:/home/rsanalytics/rs_analytics/
 ```
 
 **Option B: Using WinSCP (easier)**
 
 1. Download WinSCP: https://winscp.net/download
 2. Connect with:
-   - Host: `103.14.79.195`
+   - Host: `YOUR_VPS_IP`
    - User: `root`  
-   - Password: `4Bj8TaZq`
+   - Password: (your VPS password)
 3. Navigate to `/home/rsanalytics/rs_analytics/`
 4. Upload these folders from your project:
    - `app/`
@@ -174,7 +173,7 @@ systemctl restart nginx
 
 ## Access Your Dashboard
 
-Open in browser: **http://103.14.79.195**
+Open in browser: **http://YOUR_VPS_IP**
 
 ---
 

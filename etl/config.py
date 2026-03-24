@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from etl.utils import load_env_file, resolve_path, ensure_directory_exists, get_project_root
 
 # ============================================
 # Custom Exception
@@ -135,18 +135,7 @@ def get_config(force_reload: bool = False) -> Config:
         return _config_instance
     
     # Load .env file from project root
-    # Try multiple possible locations for .env
-    env_locations = [
-        Path.cwd() / ".env",  # Current working directory
-        Path(__file__).parent.parent / ".env",  # Project root relative to this file
-    ]
-    
-    env_loaded = False
-    for env_path in env_locations:
-        if env_path.exists():
-            load_dotenv(env_path)
-            env_loaded = True
-            break
+    env_loaded = load_env_file()
     
     # Setup basic logging for config loading messages
     logging.basicConfig(
@@ -205,7 +194,7 @@ def get_config(force_reload: bool = False) -> Config:
             "For production use, please use an absolute path."
         )
         # Convert to absolute based on project root
-        google_credentials_path = (Path(__file__).parent.parent / google_credentials_path).resolve()
+        google_credentials_path = (get_project_root() / google_credentials_path).resolve()
     
     if not google_credentials_path.exists():
         raise ConfigurationError(
@@ -232,11 +221,7 @@ def get_config(force_reload: bool = False) -> Config:
     # Validate DuckDB Path
     # ============================================
     
-    duckdb_path_str = os.getenv("DUCKDB_PATH", "./data/warehouse.duckdb")
-    duckdb_path = Path(duckdb_path_str)
-    
-    if not duckdb_path.is_absolute():
-        duckdb_path = (Path(__file__).parent.parent / duckdb_path).resolve()
+    duckdb_path = resolve_path(os.getenv("DUCKDB_PATH", None), "data/warehouse.duckdb")
     
     # Ensure parent directory exists or can be created
     duckdb_parent = duckdb_path.parent
@@ -258,25 +243,18 @@ def get_config(force_reload: bool = False) -> Config:
     # Validate Logging Settings
     # ============================================
     
-    log_dir_str = os.getenv("LOG_DIR", "./logs")
-    log_dir = Path(log_dir_str)
-    
-    if not log_dir.is_absolute():
-        log_dir = (Path(__file__).parent.parent / log_dir).resolve()
-    
-    if not log_dir.exists():
-        try:
-            log_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Created log directory: {log_dir}")
-        except PermissionError:
-            raise ConfigurationError(
-                message=f"Cannot create log directory: {log_dir}",
-                fix=(
-                    f"1. Create the directory manually: mkdir -p {log_dir}\n"
-                    "2. Ensure you have write permissions\n"
-                    "3. Or set LOG_DIR to a different location in .env"
-                )
+    log_dir = resolve_path(os.getenv("LOG_DIR", None), "logs")
+    try:
+        ensure_directory_exists(log_dir)
+    except PermissionError:
+        raise ConfigurationError(
+            message=f"Cannot create log directory: {log_dir}",
+            fix=(
+                f"1. Create the directory manually: mkdir -p {log_dir}\n"
+                "2. Ensure you have write permissions\n"
+                "3. Or set LOG_DIR to a different location in .env"
             )
+        )
     
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     valid_log_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -353,7 +331,7 @@ def get_config(force_reload: bool = False) -> Config:
         
         bq_credentials_path = Path(bq_credentials_str)
         if not bq_credentials_path.is_absolute():
-            bq_credentials_path = (Path(__file__).parent.parent / bq_credentials_path).resolve()
+            bq_credentials_path = (get_project_root() / bq_credentials_path).resolve()
         
         if not bq_credentials_path.exists():
             raise ConfigurationError(

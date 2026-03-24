@@ -44,6 +44,7 @@ TERM_TOOLTIPS = {
     "Spend": "Total ad spend",
     "Revenue": "Money generated from conversions",
     "Reach": "Unique users who saw your ad",
+    
     # Derived metrics
     "CTR": "Click-Through Rate = Clicks ÷ Impressions",
     "CPC": "Cost Per Click = Spend ÷ Clicks",
@@ -57,6 +58,7 @@ TERM_TOOLTIPS = {
     "Frequency": "Avg times each user saw your ad",
     "ARPU": "Avg Revenue Per User",
     "Average Position": "Avg ranking in search results",
+    
     # AppsFlyer
     "Loyal Users": "Users with 3+ app opens post-install",
     "Loyal Users per Install": "Loyal Users ÷ Installs",
@@ -65,19 +67,63 @@ TERM_TOOLTIPS = {
     "eCPI": "Effective Cost Per Install",
     "Sign-ups": "Users who registered in-app",
     "Deposits": "Users who made a payment",
+    
     # Google Ads
     "Impression Share": "Your impressions ÷ eligible impressions",
     "Quality Score": "Ad relevance rating (1-10)",
     "Match Type": "How closely queries match keywords",
+    
     # Meta
     "Ad Set": "Ads sharing targeting/budget settings",
     "Link Clicks": "Clicks to destination URL",
     "Unique Clicks": "Distinct users who clicked",
+    
+    # App-specific metrics (from app_analytics.py)
+    "new_signups": "Total users who completed registration",
+    "mobile_verified": "Users who completed mobile phone verification",
+    "vps_created": "Total VPS instances launched by users",
+    "vps_terminated": "Total VPS instances terminated/deleted",
+    "net_vps": "Net change in VPS count (created - terminated)",
+    "topups": "Number of payment/top-up transactions",
+    "points_earned_paid": "Points earned from paid top-ups",
+    "points_earned_free": "Points earned from promos/bonuses/referrals",
+    "points_spent": "Points used for VPS or services",
+    "points_balance": "Current points balance for user",
+    "points_velocity": "Points spent ÷ earned. 50-80% is healthy.",
+    "active_users": "Users with at least one action in period",
+    "paying_users": "Users who made at least one purchase",
+    "live_vps": "Currently active VPS instances",
+    
+    # Funnel stages
+    "Signup → Verified": "Conversion rate from signup to mobile verification",
+    "Verified → VPS": "Conversion rate from verified to VPS creation",
+    "VPS → Paid": "Conversion rate from VPS user to paying customer",
+    "Overall Conversion": "End-to-end signup to paid conversion rate",
+    
+    # Time-based metrics
+    "Peak Day": "Day with highest value in the period",
+    "Daily Average": "Average value per day in period",
+    "Peak Active Users": "Highest daily active user count",
+    "Total Transactions": "Sum of all transactions in period",
+    "Avg Transaction Value": "Average revenue per transaction",
+    "Unique Payer Days": "Sum of daily unique payers (same user counted per day)",
+    
+    # Geographic metrics
+    "Total Countries": "Number of distinct countries with signups",
+    "Top Country": "Country with most signups in period",
+    "Top 3 Concentration": "Percentage of signups from top 3 countries",
+    
+    # Cohort metrics
+    "Verification Rate": "% of users who verified mobile",
+    "Product Adoption": "% of users who created a VPS",
+    "Retention metric": "Metric used to measure user retention (active/paid)",
+    
     # Other
     "Engagement Rate": "Interactions ÷ Impressions",
     "Avg CTR": "Average Click-Through Rate",
     "Conv. Value": "Total value of conversions",
     "Cost/Install": "Cost Per Install",
+    "Paid Spend": "Total advertising spend across all channels",
 }
 
 

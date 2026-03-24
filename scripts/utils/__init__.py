@@ -11,8 +11,10 @@ from scripts.utils.cli import (
     create_etl_parser,
     get_date_range_from_args,
     setup_script_logging,
+    print_completion,
 )
 from scripts.utils.db import (
+    upsert_to_duckdb,
     load_to_duckdb,
     load_dataframe_to_duckdb,
     get_table_row_count,
@@ -31,7 +33,9 @@ __all__ = [
     'create_etl_parser',
     'get_date_range_from_args',
     'setup_script_logging',
+    'print_completion',
     # Database utilities
+    'upsert_to_duckdb',
     'load_to_duckdb',
     'load_dataframe_to_duckdb',
     'get_table_row_count',

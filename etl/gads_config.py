@@ -20,9 +20,9 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from dotenv import load_dotenv
 
 from etl.config import ConfigurationError
+from etl.utils import load_env_file, resolve_path, ensure_directory_exists
 
 
 # ============================================
@@ -79,15 +79,7 @@ def get_gads_config(force_reload: bool = False) -> GAdsConfig:
         return _gads_config_instance
     
     # Load .env file
-    env_locations = [
-        Path.cwd() / ".env",
-        Path(__file__).parent.parent / ".env",
-    ]
-    
-    for env_path in env_locations:
-        if env_path.exists():
-            load_dotenv(env_path)
-            break
+    load_env_file()
     
     logger = logging.getLogger("gads_config")
     
@@ -106,10 +98,7 @@ def get_gads_config(force_reload: bool = False) -> GAdsConfig:
             )
         )
     
-    yaml_path = Path(yaml_path_str)
-    
-    if not yaml_path.is_absolute():
-        yaml_path = (Path(__file__).parent.parent / yaml_path).resolve()
+    yaml_path = resolve_path(yaml_path_str, yaml_path_str)
     
     if not yaml_path.exists():
         raise ConfigurationError(
@@ -179,19 +168,10 @@ def get_gads_config(force_reload: bool = False) -> GAdsConfig:
     # ============================================
     
     # DuckDB path
-    duckdb_path_str = os.getenv("DUCKDB_PATH", "./data/warehouse.duckdb")
-    duckdb_path = Path(duckdb_path_str)
-    if not duckdb_path.is_absolute():
-        duckdb_path = (Path(__file__).parent.parent / duckdb_path).resolve()
+    duckdb_path = resolve_path(os.getenv("DUCKDB_PATH", None), "data/warehouse.duckdb")
     
     # Log directory
-    log_dir_str = os.getenv("LOG_DIR", "./logs")
-    log_dir = Path(log_dir_str)
-    if not log_dir.is_absolute():
-        log_dir = (Path(__file__).parent.parent / log_dir).resolve()
-    
-    if not log_dir.exists():
-        log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = ensure_directory_exists(resolve_path(os.getenv("LOG_DIR", None), "logs"))
     
     # Log level
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()

@@ -17,11 +17,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from dotenv import load_dotenv
+from etl.utils import load_env_file, resolve_path
 
 # Load environment variables from .env at project root
-project_root = Path(__file__).parent.parent
-load_dotenv(project_root / ".env")
+load_env_file()
 
 
 class AppsFlyerConfigurationError(Exception):
@@ -113,13 +112,7 @@ def get_appsflyer_config() -> AppsFlyerConfig:
         )
 
     # ── DuckDB Path ──
-    duckdb_path_str = os.getenv("DUCKDB_PATH", "./data/warehouse.duckdb")
-    duckdb_path = Path(duckdb_path_str)
-
-    if not duckdb_path.is_absolute():
-        duckdb_path = (project_root / duckdb_path).resolve()
-
-    # Ensure the data directory exists
+    duckdb_path = resolve_path(os.getenv("DUCKDB_PATH", None), "data/warehouse.duckdb")
     duckdb_path.parent.mkdir(parents=True, exist_ok=True)
 
     return AppsFlyerConfig(

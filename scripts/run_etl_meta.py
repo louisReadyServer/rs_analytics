@@ -43,15 +43,17 @@ from pathlib import Path
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# Bootstrap: add project root to sys.path so etl.utils can be imported
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from etl.utils import get_project_root
+project_root = get_project_root()
 
 import duckdb
 import pandas as pd
 
 from etl.meta_config import get_meta_config, MetaConfigurationError
 from etl.meta_extractor import MetaExtractor
+from scripts.utils.db import upsert_to_duckdb
 
 # Configure logging
 logging.basicConfig(
@@ -300,62 +302,6 @@ def create_tables(conn: duckdb.DuckDBPyConnection) -> None:
             raise
 
 
-def upsert_dataframe(conn: duckdb.DuckDBPyConnection, 
-                     df: pd.DataFrame, 
-                     table_name: str,
-                     key_columns: list) -> int:
-    """
-    Upsert DataFrame into DuckDB table.
-    
-    Uses DELETE + INSERT approach for proper upsert behavior.
-    
-    Args:
-        conn: DuckDB connection
-        df: DataFrame to upsert
-        table_name: Target table name
-        key_columns: Primary key columns for deduplication
-        
-    Returns:
-        Number of rows inserted
-    """
-    if df.empty:
-        logger.warning(f"  ⚠️  No data to upsert for {table_name}")
-        return 0
-    
-    try:
-        # Register DataFrame as a temporary view
-        conn.register('temp_df', df)
-        
-        # Delete existing rows that match keys
-        if key_columns:
-            key_conditions = ' AND '.join([f"t.{col} = temp_df.{col}" for col in key_columns])
-            delete_sql = f"""
-                DELETE FROM {table_name} t
-                WHERE EXISTS (
-                    SELECT 1 FROM temp_df 
-                    WHERE {key_conditions}
-                )
-            """
-            conn.execute(delete_sql)
-        
-        # Insert all rows from DataFrame
-        insert_sql = f"INSERT INTO {table_name} SELECT * FROM temp_df"
-        conn.execute(insert_sql)
-        
-        # Unregister temp view
-        conn.unregister('temp_df')
-        
-        logger.info(f"  ✅ Upserted {len(df):,} rows into {table_name}")
-        return len(df)
-        
-    except Exception as e:
-        logger.error(f"  ❌ Error upserting into {table_name}: {e}")
-        try:
-            conn.unregister('temp_df')
-        except:
-            pass
-        return 0
-
 
 def run_etl(config, 
             days: int = None,
@@ -384,75 +330,69 @@ def run_etl(config,
         'end_time': None
     }
     
-    # Connect to DuckDB
+    duckdb_path = str(config.duckdb_path)
+
+    # Connect to DuckDB for table creation
     logger.info(f"Connecting to DuckDB: {config.duckdb_path}")
-    conn = duckdb.connect(str(config.duckdb_path))
-    
-    try:
-        # Create tables
-        create_tables(conn)
+    conn = duckdb.connect(duckdb_path)
+    create_tables(conn)
+    conn.close()
+
+    # Process each ad account
+    for account_id in config.ad_account_ids:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Processing account: {account_id}")
+        logger.info(f"{'='*60}")
         
-        # Process each ad account
-        for account_id in config.ad_account_ids:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Processing account: {account_id}")
-            logger.info(f"{'='*60}")
+        try:
+            # Initialize extractor
+            extractor = MetaExtractor(config.access_token, account_id)
             
-            try:
-                # Initialize extractor
-                extractor = MetaExtractor(config.access_token, account_id)
-                
-                # Test connection
-                success, msg = extractor.test_connection()
-                if not success:
-                    logger.error(f"Connection failed: {msg}")
-                    stats['errors'].append(f"{account_id}: {msg}")
-                    continue
-                
-                logger.info(f"Connected: {msg}")
-                
-                # Extract all data
-                data = extractor.extract_all(
-                    days=days,
-                    start_date=start_date,
-                    end_date=end_date,
-                    lifetime=lifetime
-                )
-                
-                # Mapping from extraction keys to table names and their primary keys
-                table_mapping = {
-                    'daily_account': ('meta_daily_account', ['date', 'ad_account_id']),
-                    'campaigns': ('meta_campaigns', ['campaign_id']),
-                    'campaign_insights': ('meta_campaign_insights', ['date', 'campaign_id']),
-                    'adsets': ('meta_adsets', ['adset_id']),
-                    'adset_insights': ('meta_adset_insights', ['date', 'adset_id']),
-                    'ads': ('meta_ads', ['ad_id']),
-                    'ad_insights': ('meta_ad_insights', ['date', 'ad_id']),
-                    'geographic': ('meta_geographic', ['date_start', 'ad_account_id', 'country']),
-                    'devices': ('meta_devices', ['date_start', 'ad_account_id', 'device_platform', 'publisher_platform']),
-                    'demographics': ('meta_demographics', ['date_start', 'ad_account_id', 'age', 'gender']),
-                }
-                
-                # Upsert each dataset
-                for data_key, (table_name, pk_columns) in table_mapping.items():
-                    df = data.get(data_key, pd.DataFrame())
-                    if not df.empty:
-                        rows = upsert_dataframe(conn, df, table_name, pk_columns)
-                        stats['total_rows'] += rows
+            # Test connection
+            success, msg = extractor.test_connection()
+            if not success:
+                logger.error(f"Connection failed: {msg}")
+                stats['errors'].append(f"{account_id}: {msg}")
+                continue
+            
+            logger.info(f"Connected: {msg}")
+            
+            # Extract all data
+            data = extractor.extract_all(
+                days=days,
+                start_date=start_date,
+                end_date=end_date,
+                lifetime=lifetime
+            )
+            
+            # Mapping from extraction keys to table names and their primary keys
+            table_mapping = {
+                'daily_account': ('meta_daily_account', ['date', 'ad_account_id']),
+                'campaigns': ('meta_campaigns', ['campaign_id']),
+                'campaign_insights': ('meta_campaign_insights', ['date', 'campaign_id']),
+                'adsets': ('meta_adsets', ['adset_id']),
+                'adset_insights': ('meta_adset_insights', ['date', 'adset_id']),
+                'ads': ('meta_ads', ['ad_id']),
+                'ad_insights': ('meta_ad_insights', ['date', 'ad_id']),
+                'geographic': ('meta_geographic', ['date_start', 'ad_account_id', 'country']),
+                'devices': ('meta_devices', ['date_start', 'ad_account_id', 'device_platform', 'publisher_platform']),
+                'demographics': ('meta_demographics', ['date_start', 'ad_account_id', 'age', 'gender']),
+            }
+            
+            # Upsert each dataset
+            for data_key, (table_name, pk_columns) in table_mapping.items():
+                df = data.get(data_key, pd.DataFrame())
+                if not df.empty:
+                    if upsert_to_duckdb(duckdb_path, df, table_name, pk_columns, logger):
+                        stats['total_rows'] += len(df)
                         stats['tables_updated'] += 1
-                
-                stats['accounts_processed'] += 1
-                logger.info(f"✅ Account {account_id} processed successfully")
-                
-            except Exception as e:
-                logger.error(f"❌ Error processing account {account_id}: {e}")
-                stats['errors'].append(f"{account_id}: {str(e)}")
-        
-        # Commit changes
-        conn.commit()
-        
-    finally:
-        conn.close()
+            
+            stats['accounts_processed'] += 1
+            logger.info(f"✅ Account {account_id} processed successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Error processing account {account_id}: {e}")
+            stats['errors'].append(f"{account_id}: {str(e)}")
     
     stats['end_time'] = datetime.now()
     stats['duration_seconds'] = (stats['end_time'] - stats['start_time']).total_seconds()

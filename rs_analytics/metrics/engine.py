@@ -365,10 +365,25 @@ class MetricEngine:
         # Determine the date column name based on source view
         date_col = self._get_date_column(source_view)
 
+        # When the caller asks for "date_day" but the underlying table uses
+        # a different column name (e.g. "date"), we alias it in SELECT and
+        # reference the real column in GROUP BY / ORDER BY so the SQL is valid
+        # while the returned DataFrame still has a "date_day" column.
+        needs_date_alias = False
+        if dims and "date_day" in dims and date_col != "date_day":
+            needs_date_alias = True
+
         # Build SELECT expressions
         select_parts = []
+        group_order_dims = []
         if dims:
-            select_parts.extend(dims)
+            for dim in dims:
+                if dim == "date_day" and needs_date_alias:
+                    select_parts.append(f"{date_col} AS date_day")
+                    group_order_dims.append(date_col)
+                else:
+                    select_parts.append(dim)
+                    group_order_dims.append(dim)
 
         for name, defn in metric_defs:
             expression = defn["expression"]
@@ -398,8 +413,8 @@ class MetricEngine:
             sql += "\nWHERE " + "\n  AND ".join(where_parts)
 
         if dims:
-            sql += "\nGROUP BY " + ", ".join(dims)
-            sql += "\nORDER BY " + ", ".join(dims)
+            sql += "\nGROUP BY " + ", ".join(group_order_dims)
+            sql += "\nORDER BY " + ", ".join(group_order_dims)
 
         return sql
 
@@ -417,7 +432,7 @@ class MetricEngine:
         Returns:
             True if view was created/updated, False on error
         """
-        sql_path = Path(__file__).parent.parent.parent / "sql" / "views" / "v_exec_daily.sql"
+        sql_path = Path(__file__).parent.parent.parent / "data" / "views" / "v_exec_daily.sql"
 
         if not sql_path.exists():
             logger.error("View SQL not found: %s", sql_path)

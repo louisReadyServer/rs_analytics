@@ -21,65 +21,13 @@ from typing import Optional
 
 import streamlit as st
 import pandas as pd
-import duckdb
 import plotly.express as px
 import plotly.graph_objects as go
 
 from app.components.glossary import TERM_TOOLTIPS
+from app.components.utils import query_duckdb, check_tables_exist
 
-
-# ============================================
-# Data Loading Helpers
-# ============================================
-
-
-def _query(duckdb_path: str, sql: str) -> Optional[pd.DataFrame]:
-    """
-    Execute a SQL query on DuckDB and return a DataFrame.
-
-    Args:
-        duckdb_path: Path to the DuckDB database file
-        sql: SQL query to execute
-
-    Returns:
-        DataFrame or None if the query fails
-    """
-    try:
-        conn = duckdb.connect(duckdb_path, read_only=True)
-        df = conn.execute(sql).fetchdf()
-        conn.close()
-        return df
-    except Exception as exc:
-        st.error(f"Query error: {exc}")
-        return None
-
-
-def _check_af_data(duckdb_path: str) -> tuple:
-    """
-    Check if AppsFlyer data exists in the database.
-
-    Returns:
-        (has_data: bool, total_rows: int, tables_found: list)
-    """
-    af_tables = ["af_daily_sources", "af_daily_geo"]
-    found = []
-    total_rows = 0
-
-    try:
-        conn = duckdb.connect(duckdb_path, read_only=True)
-        existing = conn.execute("SHOW TABLES").fetchdf()["name"].tolist()
-
-        for table in af_tables:
-            if table in existing:
-                count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                if count > 0:
-                    found.append(table)
-                    total_rows += count
-
-        conn.close()
-        return len(found) > 0, total_rows, found
-    except Exception:
-        return False, 0, []
+AF_TABLES = ["af_daily_sources", "af_daily_geo"]
 
 
 # ============================================
@@ -148,7 +96,7 @@ def render_appsflyer_dashboard(duckdb_path: str) -> None:
     st.header("📱 AppsFlyer – Mobile App Analytics")
 
     # ── Check data availability ──
-    has_data, total_rows, tables = _check_af_data(duckdb_path)
+    has_data, total_rows, tables = check_tables_exist(duckdb_path, AF_TABLES)
 
     if not has_data:
         st.info(
@@ -166,7 +114,7 @@ def render_appsflyer_dashboard(duckdb_path: str) -> None:
     st.success(f"AppsFlyer data loaded: {total_rows:,} rows across {len(tables)} table(s)")
 
     # ── Date range filter ──
-    date_range_df = _query(
+    date_range_df = query_duckdb(
         duckdb_path,
         "SELECT MIN(date) as min_d, MAX(date) as max_d FROM af_daily_geo",
     )
@@ -226,7 +174,7 @@ def render_appsflyer_dashboard(duckdb_path: str) -> None:
         WHERE {date_filter}
         GROUP BY platform
     """
-    kpi_df = _query(duckdb_path, kpi_query)
+    kpi_df = query_duckdb(duckdb_path, kpi_query)
 
     if kpi_df is not None and not kpi_df.empty:
         # Extract per-platform values
@@ -275,7 +223,7 @@ def render_appsflyer_dashboard(duckdb_path: str) -> None:
         GROUP BY date, platform
         ORDER BY date
     """
-    trend_df = _query(duckdb_path, trend_query)
+    trend_df = query_duckdb(duckdb_path, trend_query)
 
     if trend_df is not None and not trend_df.empty:
         trend_df["date"] = pd.to_datetime(trend_df["date"])
@@ -335,7 +283,7 @@ def render_appsflyer_dashboard(duckdb_path: str) -> None:
                 ORDER BY installs DESC
                 LIMIT 15
             """
-            geo_df = _query(duckdb_path, geo_query)
+            geo_df = query_duckdb(duckdb_path, geo_query)
 
             if geo_df is not None and not geo_df.empty:
                 fig_geo = px.bar(
@@ -378,7 +326,7 @@ def render_appsflyer_dashboard(duckdb_path: str) -> None:
         GROUP BY platform, media_source
         ORDER BY installs DESC
     """
-    source_df = _query(duckdb_path, source_query)
+    source_df = query_duckdb(duckdb_path, source_query)
 
     if source_df is not None and not source_df.empty:
         col_src_ios, col_src_and = st.columns(2)
@@ -429,7 +377,7 @@ def render_appsflyer_dashboard(duckdb_path: str) -> None:
         WHERE {date_filter}
         GROUP BY platform
     """
-    events_df = _query(duckdb_path, events_query)
+    events_df = query_duckdb(duckdb_path, events_query)
 
     if events_df is not None and not events_df.empty:
         # Melt to long format for grouped bar chart
@@ -483,7 +431,7 @@ def render_appsflyer_dashboard(duckdb_path: str) -> None:
         HAVING SUM(installs) > 0
         ORDER BY date, country
     """
-    heat_df = _query(duckdb_path, heatmap_query)
+    heat_df = query_duckdb(duckdb_path, heatmap_query)
 
     if heat_df is not None and not heat_df.empty:
         # Pivot for heatmap: rows = country, cols = date
@@ -518,7 +466,7 @@ def render_appsflyer_dashboard(duckdb_path: str) -> None:
         table_choice = st.selectbox("Select Table", options=table_options, key="af_table_choice")
 
         if table_choice:
-            raw_df = _query(duckdb_path, f"SELECT * FROM {table_choice} ORDER BY date DESC LIMIT 500")
+            raw_df = query_duckdb(duckdb_path, f"SELECT * FROM {table_choice} ORDER BY date DESC LIMIT 500")
             if raw_df is not None:
                 st.dataframe(raw_df, use_container_width=True)
             else:

@@ -26,30 +26,14 @@ import logging
 import streamlit as st
 import pandas as pd
 import numpy as np
-import duckdb
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from app.components.glossary import TERM_TOOLTIPS
+from app.components.utils import query_duckdb as _query
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================
-# Data Loading
-# ============================================
-
-def _query(duckdb_path: str, sql: str) -> Optional[pd.DataFrame]:
-    """Execute a read-only DuckDB query and return a DataFrame."""
-    try:
-        conn = duckdb.connect(duckdb_path, read_only=True)
-        df = conn.execute(sql).fetchdf()
-        conn.close()
-        return df if not df.empty else None
-    except Exception as e:
-        logger.warning(f"Query failed: {e}")
-        return None
 
 
 def _load_daily_traffic(duckdb_path: str) -> Optional[pd.DataFrame]:

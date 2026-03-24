@@ -40,15 +40,17 @@ from pathlib import Path
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# Bootstrap: add project root to sys.path so etl.utils can be imported
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from etl.utils import get_project_root
+project_root = get_project_root()
 
 import duckdb
 import pandas as pd
 
 from etl.appsflyer_config import get_appsflyer_config, AppsFlyerConfigurationError
 from etl.appsflyer_extractor import AppsFlyerExtractor
+from scripts.utils.db import upsert_to_duckdb
 
 # ── Logging ──────────────────────────────────────────────────────────
 log_file = project_root / "logs" / "appsflyer_etl.log"
@@ -175,70 +177,6 @@ def _ensure_columns_exist(
                 pass
 
 
-def upsert_dataframe(
-    conn: duckdb.DuckDBPyConnection,
-    df: pd.DataFrame,
-    table_name: str,
-    key_columns: list,
-) -> int:
-    """
-    Upsert a DataFrame into a DuckDB table using DELETE + INSERT.
-
-    Args:
-        conn: DuckDB connection
-        df: DataFrame to load
-        table_name: Target table name
-        key_columns: Columns forming the primary key (for dedup)
-
-    Returns:
-        Number of rows inserted
-    """
-    if df.empty:
-        logger.warning(f"  No data for {table_name} – skipping")
-        return 0
-
-    try:
-        # Ensure all DataFrame columns exist in the table
-        _ensure_columns_exist(conn, table_name, df)
-
-        # Normalise column names to lowercase to match DuckDB
-        df.columns = [c.lower() for c in df.columns]
-
-        # Register as temp view
-        conn.register("_tmp_af", df)
-
-        # Delete existing rows that match the composite key
-        key_conds = " AND ".join(
-            [f't."{k}" IS NOT DISTINCT FROM _tmp_af."{k}"' for k in key_columns]
-        )
-        conn.execute(
-            f"DELETE FROM {table_name} t WHERE EXISTS "
-            f"(SELECT 1 FROM _tmp_af WHERE {key_conds})"
-        )
-
-        # Build column list from the DataFrame (intersection with table cols)
-        table_cols_df = conn.execute(
-            f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}'"
-        ).fetchdf()
-        table_cols = set(table_cols_df["column_name"].str.lower().tolist())
-        df_cols = [c for c in df.columns if c in table_cols]
-
-        cols_quoted = ", ".join([f'"{c}"' for c in df_cols])
-        conn.execute(
-            f"INSERT INTO {table_name} ({cols_quoted}) SELECT {cols_quoted} FROM _tmp_af"
-        )
-
-        conn.unregister("_tmp_af")
-        logger.info(f"  Upserted {len(df):,} rows into {table_name}")
-        return len(df)
-
-    except Exception as exc:
-        logger.error(f"  Error upserting into {table_name}: {exc}")
-        try:
-            conn.unregister("_tmp_af")
-        except Exception:
-            pass
-        return 0
 
 
 # ============================================
@@ -299,76 +237,88 @@ def run_etl(
 
     logger.info(f"Date range: {from_date} to {to_date}")
 
-    # ── 3. Connect to DuckDB and create tables ──
-    conn = duckdb.connect(str(config.duckdb_path))
+    duckdb_path = str(config.duckdb_path)
 
+    # ── 3. Connect to DuckDB and create tables ──
+    conn = duckdb.connect(duckdb_path)
     try:
         create_tables(conn)
-
-        # ── 4. Process each app ──
-        for app in config.apps:
-            app_label = f"{app['platform']} ({app['id']})"
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Processing: {app_label}")
-            logger.info(f"{'='*60}")
-
-            try:
-                extractor = AppsFlyerExtractor(
-                    api_token=config.api_token,
-                    app_id=app["id"],
-                    platform=app["platform"],
-                )
-
-                # Connectivity check
-                ok, msg = extractor.test_connection()
-                if not ok:
-                    logger.error(f"Connection failed for {app_label}: {msg}")
-                    stats["errors"].append(f"{app_label}: {msg}")
-                    continue
-                logger.info(f"  Connected: {msg}")
-
-                # Brief pause after connectivity test to avoid rate-limiting
-                import time
-                time.sleep(3)
-
-                # Extract all reports
-                data = extractor.extract_all(from_date, to_date)
-
-                # ── Upsert partners_by_date → af_daily_sources ──
-                partners_df = data.get("partners_by_date", pd.DataFrame())
-                if not partners_df.empty:
-                    rows = upsert_dataframe(
-                        conn,
-                        partners_df,
-                        "af_daily_sources",
-                        ["date", "platform", "app_id", "media_source", "campaign"],
-                    )
-                    stats["total_rows"] += rows
-                    stats["tables_updated"] += 1
-
-                # ── Upsert geo_by_date → af_daily_geo ──
-                geo_df = data.get("geo_by_date", pd.DataFrame())
-                if not geo_df.empty:
-                    rows = upsert_dataframe(
-                        conn,
-                        geo_df,
-                        "af_daily_geo",
-                        ["date", "country", "platform", "app_id", "media_source", "campaign"],
-                    )
-                    stats["total_rows"] += rows
-                    stats["tables_updated"] += 1
-
-                stats["apps_processed"] += 1
-                logger.info(f"  {app_label} done")
-
-            except Exception as exc:
-                logger.error(f"Error processing {app_label}: {exc}", exc_info=True)
-                stats["errors"].append(f"{app_label}: {exc}")
-
-        conn.commit()
-
     finally:
         conn.close()
+
+    # ── 4. Process each app ──
+    for app in config.apps:
+        app_label = f"{app['platform']} ({app['id']})"
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Processing: {app_label}")
+        logger.info(f"{'='*60}")
+
+        try:
+            extractor = AppsFlyerExtractor(
+                api_token=config.api_token,
+                app_id=app["id"],
+                platform=app["platform"],
+            )
+
+            # Connectivity check
+            ok, msg = extractor.test_connection()
+            if not ok:
+                logger.error(f"Connection failed for {app_label}: {msg}")
+                stats["errors"].append(f"{app_label}: {msg}")
+                continue
+            logger.info(f"  Connected: {msg}")
+
+            # Brief pause after connectivity test to avoid rate-limiting
+            import time
+            time.sleep(3)
+
+            # Extract all reports
+            data = extractor.extract_all(from_date, to_date)
+
+            # Ensure dynamic event columns exist before upserting
+            partners_df = data.get("partners_by_date", pd.DataFrame())
+            geo_df = data.get("geo_by_date", pd.DataFrame())
+
+            if not partners_df.empty or not geo_df.empty:
+                schema_conn = duckdb.connect(duckdb_path)
+                try:
+                    if not partners_df.empty:
+                        _ensure_columns_exist(schema_conn, "af_daily_sources", partners_df)
+                    if not geo_df.empty:
+                        _ensure_columns_exist(schema_conn, "af_daily_geo", geo_df)
+                finally:
+                    schema_conn.close()
+
+            # ── Upsert partners_by_date → af_daily_sources ──
+            if not partners_df.empty:
+                if upsert_to_duckdb(
+                    duckdb_path,
+                    partners_df,
+                    "af_daily_sources",
+                    ["date", "platform", "app_id", "media_source", "campaign"],
+                    logger,
+                ):
+                    stats["total_rows"] += len(partners_df)
+                    stats["tables_updated"] += 1
+
+            # ── Upsert geo_by_date → af_daily_geo ──
+            if not geo_df.empty:
+                if upsert_to_duckdb(
+                    duckdb_path,
+                    geo_df,
+                    "af_daily_geo",
+                    ["date", "country", "platform", "app_id", "media_source", "campaign"],
+                    logger,
+                ):
+                    stats["total_rows"] += len(geo_df)
+                    stats["tables_updated"] += 1
+
+            stats["apps_processed"] += 1
+            logger.info(f"  {app_label} done")
+
+        except Exception as exc:
+            logger.error(f"Error processing {app_label}: {exc}", exc_info=True)
+            stats["errors"].append(f"{app_label}: {exc}")
 
     stats["end_time"] = datetime.now()
     stats["duration_seconds"] = (

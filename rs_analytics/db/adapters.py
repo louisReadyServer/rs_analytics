@@ -12,7 +12,7 @@ Why this exists:
 - Channel names vary: 'google_ads' vs 'Google Ads' vs 'google ads'
 
 When adding a new data source, add its mapping here and update
-sql/views/v_exec_daily.sql accordingly.
+data/views/v_exec_daily.sql accordingly.
 
 TODO markers below indicate column mappings that may need adjustment
 based on your actual DuckDB table schemas. Check with:

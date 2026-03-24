@@ -328,22 +328,6 @@ def setup_extractor_logging(
 # Data Transformation Utilities
 # ============================================
 
-def clean_column_names(columns: list) -> list:
-    """
-    Clean column names for database compatibility.
-    
-    Replaces non-alphanumeric characters with underscores.
-    
-    Args:
-        columns: List of column names
-        
-    Returns:
-        List of cleaned column names
-    """
-    import re
-    return [re.sub(r'[^a-zA-Z0-9_]', '_', col) for col in columns]
-
-
 def flatten_dict(
     d: dict,
     parent_key: str = '',
@@ -374,35 +358,3 @@ def flatten_dict(
     return dict(items)
 
 
-def safe_int(value, default: int = 0) -> int:
-    """
-    Safely convert a value to int.
-    
-    Args:
-        value: Value to convert
-        default: Default if conversion fails
-        
-    Returns:
-        Integer value or default
-    """
-    try:
-        return int(float(value)) if value is not None else default
-    except (ValueError, TypeError):
-        return default
-
-
-def safe_float(value, default: float = 0.0) -> float:
-    """
-    Safely convert a value to float.
-    
-    Args:
-        value: Value to convert
-        default: Default if conversion fails
-        
-    Returns:
-        Float value or default
-    """
-    try:
-        return float(value) if value is not None else default
-    except (ValueError, TypeError):
-        return default

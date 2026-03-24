@@ -26,29 +26,14 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import duckdb
-
 from rs_analytics.db.client import DuckDBClient
 from rs_analytics.metrics.cohorts import CohortEngine
 from rs_analytics.utils.formatting import safe_float, safe_divide
 
+from app.components.utils import query_duckdb as _query
+from app.components.glossary import TERM_TOOLTIPS
+
 logger = logging.getLogger(__name__)
-
-
-# ============================================
-# Helpers
-# ============================================
-
-def _query(duckdb_path: str, sql: str) -> Optional[pd.DataFrame]:
-    """Run a read-only query against the DuckDB warehouse."""
-    try:
-        conn = duckdb.connect(duckdb_path, read_only=True)
-        df = conn.execute(sql).fetchdf()
-        conn.close()
-        return df if not df.empty else None
-    except Exception as e:
-        logger.warning("Query failed: %s", e)
-        return None
 
 
 # ============================================

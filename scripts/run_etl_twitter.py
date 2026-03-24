@@ -28,15 +28,17 @@ from pathlib import Path
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# Bootstrap: add project root to sys.path so etl.utils can be imported
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from etl.utils import get_project_root
+project_root = get_project_root()
 
 import duckdb
 import pandas as pd
 
 from etl.twitter_config import get_twitter_config, TwitterConfigurationError
 from etl.twitter_extractor import TwitterExtractor
+from scripts.utils.db import upsert_to_duckdb
 
 # Configure logging
 logging.basicConfig(
@@ -125,61 +127,6 @@ def create_tables(conn: duckdb.DuckDBPyConnection) -> None:
             raise
 
 
-def upsert_dataframe(conn: duckdb.DuckDBPyConnection, 
-                     df: pd.DataFrame, 
-                     table_name: str, 
-                     key_columns: list) -> int:
-    """
-    Upsert DataFrame into DuckDB table.
-    
-    Uses DELETE + INSERT strategy for simplicity.
-    
-    Args:
-        conn: DuckDB connection
-        df: DataFrame to upsert
-        table_name: Target table name
-        key_columns: List of columns that form the primary key
-        
-    Returns:
-        Number of rows upserted
-    """
-    if df.empty:
-        logger.info(f"  ⚪ No data to upsert for {table_name}")
-        return 0
-    
-    try:
-        # Register DataFrame as temp table
-        conn.register('df_temp', df)
-        
-        # Build WHERE clause for key columns
-        if key_columns:
-            key_conditions = " AND ".join([
-                f"{table_name}.{col} = df_temp.{col}" 
-                for col in key_columns
-            ])
-            
-            # Delete existing rows with matching keys
-            delete_query = f"""
-                DELETE FROM {table_name}
-                WHERE EXISTS (
-                    SELECT 1 FROM df_temp 
-                    WHERE {key_conditions}
-                )
-            """
-            conn.execute(delete_query)
-        
-        # Insert new rows
-        conn.execute(f"INSERT INTO {table_name} SELECT * FROM df_temp")
-        
-        # Unregister temp table
-        conn.unregister('df_temp')
-        
-        return len(df)
-        
-    except Exception as e:
-        logger.error(f"Error upserting to {table_name}: {e}")
-        raise
-
 
 def run_etl(config, max_tweets: int = 100, profile_only: bool = False) -> dict:
     """
@@ -201,13 +148,16 @@ def run_etl(config, max_tweets: int = 100, profile_only: bool = False) -> dict:
         'errors': []
     }
     
-    # Connect to DuckDB
+    duckdb_path = str(config.duckdb_path)
+
+    # Connect to DuckDB for table creation
     logger.info(f"Connecting to DuckDB: {config.duckdb_path}")
-    conn = duckdb.connect(str(config.duckdb_path))
+    conn = duckdb.connect(duckdb_path)
     
     # Create tables
     logger.info("Creating/verifying database tables...")
     create_tables(conn)
+    conn.close()
     
     # Initialize extractor
     logger.info(f"\nExtracting data for @{config.username}...")
@@ -218,7 +168,6 @@ def run_etl(config, max_tweets: int = 100, profile_only: bool = False) -> dict:
     if not success:
         stats['errors'].append(f"Connection failed: {message}")
         logger.error(f"  ❌ {message}")
-        conn.close()
         return stats
     
     logger.info(f"  ✅ {message}")
@@ -228,9 +177,8 @@ def run_etl(config, max_tweets: int = 100, profile_only: bool = False) -> dict:
     try:
         profile_df = extractor.extract_user_profile()
         if not profile_df.empty:
-            stats['profile_rows'] = upsert_dataframe(
-                conn, profile_df, 'twitter_profile', ['user_id', 'snapshot_date']
-            )
+            if upsert_to_duckdb(duckdb_path, profile_df, 'twitter_profile', ['user_id', 'snapshot_date'], logger):
+                stats['profile_rows'] = len(profile_df)
             logger.info(f"  ✅ Upserted {stats['profile_rows']} profile row(s)")
     except Exception as e:
         stats['errors'].append(f"Profile extraction failed: {e}")
@@ -242,18 +190,16 @@ def run_etl(config, max_tweets: int = 100, profile_only: bool = False) -> dict:
         try:
             tweets_df = extractor.extract_recent_tweets(max_results=max_tweets)
             if not tweets_df.empty:
-                stats['tweet_rows'] = upsert_dataframe(
-                    conn, tweets_df, 'twitter_tweets', ['tweet_id']
-                )
+                if upsert_to_duckdb(duckdb_path, tweets_df, 'twitter_tweets', ['tweet_id'], logger):
+                    stats['tweet_rows'] = len(tweets_df)
                 logger.info(f"  ✅ Upserted {stats['tweet_rows']} tweet(s)")
                 
                 # Calculate daily metrics
                 logger.info("\nCalculating daily metrics...")
                 daily_df = extractor.extract_daily_metrics(tweets_df)
                 if not daily_df.empty:
-                    stats['daily_rows'] = upsert_dataframe(
-                        conn, daily_df, 'twitter_daily_metrics', ['date', 'username']
-                    )
+                    if upsert_to_duckdb(duckdb_path, daily_df, 'twitter_daily_metrics', ['date', 'username'], logger):
+                        stats['daily_rows'] = len(daily_df)
                     logger.info(f"  ✅ Upserted {stats['daily_rows']} daily metric row(s)")
             else:
                 logger.info("  ⚪ No tweets found")
@@ -262,7 +208,6 @@ def run_etl(config, max_tweets: int = 100, profile_only: bool = False) -> dict:
             stats['errors'].append(f"Tweet extraction failed: {e}")
             logger.error(f"  ❌ Tweet extraction failed: {e}")
     
-    conn.close()
     stats['end_time'] = datetime.now()
     
     return stats
